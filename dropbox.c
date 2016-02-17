@@ -82,6 +82,7 @@ wait:
 	}
 	if (!WIFEXITED(status) || WEXITSTATUS(status)) {
 		fprintf(stderr, "dropbox.py exited abnormally\n");
+		errno = EINVAL;
 		ret2 = -1;
 	}
 
@@ -149,13 +150,19 @@ enum status dropbox_update(struct dropbox_section *section)
 			     environ);
 	if (errno) {
 		perror("posix_spawnp");
+		status = SECTION_ERROR;
 		goto out;
 	}
 
 	close(pipefd[1]);
 	ret = read_all_output(section, pid, pipefd[0]);
-	if (ret)
+	if (ret) {
+		if (errno == ENOMEM)
+			status = SECTION_FATAL;
+		else
+			status = SECTION_ERROR;
 		goto out;
+	}
 
 	if (strcmp(section->status.buf, "Dropbox isn't running!\n") == 0)
 		section->running = false;
