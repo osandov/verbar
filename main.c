@@ -19,7 +19,6 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <poll.h>
-#include <spawn.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -31,11 +30,15 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <X11/Xlib.h>
 
 #include "sections.h"
 #include "util.h"
 
 extern char **environ;
+
+static Display *dpy;
+static Window root;
 
 bool wordy;
 
@@ -99,32 +102,6 @@ static int append_time(struct str *str)
 	return str_append(str, buf);
 }
 
-static int do_update(void)
-{
-	char *argv[] = {"xsetroot", "-name", status_str.buf, NULL};
-	int status;
-	pid_t pid;
-	int ret;
-
-	errno = posix_spawnp(&pid, "xsetroot", NULL, NULL, argv, environ);
-	if (errno) {
-		perror("posix_spawnp");
-		return -1;
-	}
-
-	ret = waitpid(pid, &status, 0);
-	if (ret == -1) {
-		perror("waitpid");
-		return -1;
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status)) {
-		fprintf(stderr, "xsetroot exited abnormally\n");
-		return -1;
-	}
-
-	return 0;
-}
-
 static int update_statusbar(void)
 {
 	status_str.len = 0;
@@ -155,8 +132,8 @@ static int update_statusbar(void)
 	if (str_null_terminate(&status_str))
 		return -1;
 	
-	if (do_update())
-		return -1;
+	XStoreName(dpy, root, status_str.buf);
+	XFlush(dpy);
 
 	return 0;
 }
@@ -220,6 +197,15 @@ int main(void)
 	ssize_t ssret;
 	enum status section_status;
 	int status = EXIT_SUCCESS;
+
+	dpy = XOpenDisplay(NULL);
+	if (!dpy) {
+		fprintf(stderr, "unable to open display '%s'\n",
+			XDisplayName(NULL));
+		status = EXIT_FAILURE;
+		goto out;
+	}
+	root = DefaultRootWindow(dpy);
 
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGINT);
@@ -432,5 +418,7 @@ out:
 	if (signal_fd != -1)
 		close(signal_fd);
 	str_free(&status_str);
+	if (dpy)
+		XCloseDisplay(dpy);
 	return status;
 }
