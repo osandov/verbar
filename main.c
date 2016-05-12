@@ -464,7 +464,10 @@ out:
 	if (signal_fd != -1)
 		close(signal_fd);
 	str_free(&status_str);
-	if (dpy)
+	if (dpy) {
+		XStoreName(dpy, root, "");
+		XFlush(dpy);
 		XCloseDisplay(dpy);
+	}
 	return status;
 }
