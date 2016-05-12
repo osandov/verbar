@@ -402,7 +402,7 @@ int main(int argc, char **argv)
 			}
 			assert(ssret == sizeof(times));
 			if (times > 1) {
-				fprintf(stderr, "Warning: missed %" PRIu64 " ticks",
+				fprintf(stderr, "warning: missed %" PRIu64 " ticks\n",
 					times - 1);
 			}
 			ret = update_on_timer();
