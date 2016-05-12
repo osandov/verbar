@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Omar Sandoval
+ * Copyright (C) 2015-2016 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,6 +17,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <getopt.h>
 #include <inttypes.h>
 #include <poll.h>
 #include <stdbool.h>
@@ -34,6 +35,8 @@
 
 #include "sections.h"
 #include "util.h"
+
+static const char *progname = "verbar";
 
 extern char **environ;
 
@@ -184,8 +187,28 @@ static int get_ctl_addr(struct sockaddr_un *addr)
 	return ret;
 }
 
-int main(void)
+static void usage(bool error)
 {
+	fprintf(error ? stderr : stdout,
+		"usage: %s [--wordy]\n"
+		"\n"
+		"Gather system information and set the root window name\n"
+		"\n"
+		"Options:\n"
+		"  -w, --wordy    enable wordy output on startup\n"
+		"\n"
+		"Miscellaneous:\n"
+		"  -h, --help     display this help message and exit\n",
+		progname);
+	exit(error ? EXIT_FAILURE : EXIT_SUCCESS);
+}
+
+int main(int argc, char **argv)
+{
+	struct option long_options[] = {
+		{"wordy", no_argument, NULL, 'w'},
+		{"help", no_argument, NULL, 'h'},
+	};
 	int signal_fd = -1;
 	struct sockaddr_un ctl_addr;
 	int ctl_fd = -1;
@@ -197,6 +220,29 @@ int main(void)
 	ssize_t ssret;
 	enum status section_status;
 	int status = EXIT_SUCCESS;
+
+	if (argc > 0)
+		progname = argv[0];
+
+	for (;;) {
+		int c;
+
+		c = getopt_long(argc, argv, "wh", long_options, NULL);
+		if (c == -1)
+			break;
+
+		switch (c) {
+		case 'w':
+			wordy = true;
+			break;
+		case 'h':
+			usage(false);
+		default:
+			usage(true);
+		}
+	}
+	if (optind != argc)
+		usage(true);
 
 	dpy = XOpenDisplay(NULL);
 	if (!dpy) {
