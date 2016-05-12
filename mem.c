@@ -48,10 +48,7 @@ enum status mem_update(struct mem_section *section)
 	ssize_t ssret;
 	enum status status = SECTION_SUCCESS;
 	long long memtotal = -1;
-	long long memfree = -1;
-	long long buffers = -1;
-	long long cached = -1;
-	long long slab = -1;
+	long long memavailable = -1;
 
 	file = fopen("/proc/meminfo", "rb");
 	if (!file) {
@@ -65,10 +62,7 @@ enum status mem_update(struct mem_section *section)
 
 	while (errno = 0, (ssret = getline(&section->buf, &section->n, file)) != -1) {
 		if (sscanf(section->buf, "MemTotal: %lld", &memtotal) == 1 ||
-		    sscanf(section->buf, "MemFree: %lld", &memfree) == 1 ||
-		    sscanf(section->buf, "Buffers: %lld", &buffers) == 1 ||
-		    sscanf(section->buf, "Cached: %lld", &cached) == 1 ||
-		    sscanf(section->buf, "Slab: %lld", &slab) == 1)
+		    sscanf(section->buf, "MemAvailable: %lld", &memavailable) == 1)
 			continue;
 	}
 	if (ferror(file)) {
@@ -80,27 +74,14 @@ enum status mem_update(struct mem_section *section)
 		fprintf(stderr, "Missing MemTotal in /proc/meminfo\n");
 		status = SECTION_ERROR;
 	}
-	if (memfree < 0) {
-		fprintf(stderr, "Missing MemFree in /proc/meminfo\n");
-		status = SECTION_ERROR;
-	}
-	if (buffers < 0) {
-		fprintf(stderr, "Missing Buffers in /proc/meminfo\n");
-		status = SECTION_ERROR;
-	}
-	if (cached < 0) {
-		fprintf(stderr, "Missing Cached in /proc/meminfo\n");
-		status = SECTION_ERROR;
-	}
-	if (slab < 0) {
-		fprintf(stderr, "Missing Slab in /proc/meminfo\n");
+	if (memavailable < 0) {
+		fprintf(stderr, "Missing MemAvailable in /proc/meminfo\n");
 		status = SECTION_ERROR;
 	}
 	if (status == SECTION_ERROR)
 		goto out;
 
-	section->mem_usage = 100.0 * ((double)(memtotal - memfree - buffers -
-					       cached - slab) / memtotal);
+	section->mem_usage = 100.0 * ((double)(memtotal - memavailable) / memtotal);
 
 out:
 	fclose(file);
