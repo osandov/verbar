@@ -1,7 +1,9 @@
 include config.mk
 
 OBJS := main.o \
+	plugins.o \
 	util.o \
+	clock.o \
 	cpu.o \
 	dropbox.o \
 	mem.o \

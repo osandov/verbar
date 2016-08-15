@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Omar Sandoval
+ * Copyright (C) 2015-2016 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,52 +15,70 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <assert.h>
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
-#include "sections.h"
+#include "plugin.h"
 #include "util.h"
 
 #define AC "/sys/class/power_supply/AC/online"
 #define BAT "/sys/class/power_supply/BAT0/capacity"
 
-enum status power_init(struct power_section *section)
+struct power_section {
+	/* Are we plugged into AC? */
+	bool ac_online;
+
+	/* Battery capacity percentage. */
+	double battery_capacity;
+};
+
+static void power_free(void *data);
+
+static void *power_init(int epoll_fd)
 {
-	return power_update(section);
+	struct power_section *section;
+
+	section = malloc(sizeof(*section));
+	if (!section) {
+		perror("malloc");
+		return NULL;
+	}
+	return section;
 }
 
-void power_free(struct power_section *section)
+static void power_free(void *data)
 {
+	struct power_section *section = data;
+	free(section);
 }
 
-enum status power_update(struct power_section *section)
+static int power_update(void *data)
 {
+	struct power_section *section = data;
 	long long ac_online, battery_capacity;
 	int ret;
 
 	ret = parse_int_file(AC, &ac_online);
 	if (ret) {
-		fprintf(stderr, "Could not parse %s", AC);
-		return SECTION_ERROR;
+		fprintf(stderr, "could not parse %s", AC);
+		return 0;
 	}
 
 	ret = parse_int_file(BAT, &battery_capacity);
 	if (ret) {
-		fprintf(stderr, "Could not parse %s", BAT);
-		return SECTION_ERROR;
+		fprintf(stderr, "could not parse %s", BAT);
+		return 0;
 	}
 
 	section->ac_online = (bool)ac_online;
 	section->battery_capacity = (double)battery_capacity;
 
-	return SECTION_SUCCESS;
+	return 0;
 }
 
-int append_power(const struct power_section *section, struct str *str)
+static int power_append(void *data, struct str *str, bool wordy)
 {
+	struct power_section *section = data;
 	const double high_thresh = 55.0;
 	const double low_thresh = 20.0;
 	int ret;
@@ -81,3 +99,17 @@ int append_power(const struct power_section *section, struct str *str)
 
 	return str_separator(str);
 }
+
+static int power_plugin_init(void)
+{
+	struct section section = {
+		.init_func = power_init,
+		.free_func = power_free,
+		.timer_update_func = power_update,
+		.append_func = power_append,
+	};
+
+	return register_section("power", &section);
+}
+
+plugin_init(power_plugin_init);

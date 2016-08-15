@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Omar Sandoval
+ * Copyright (C) 2015-2016 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +25,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-#include "sections.h"
+#include "plugin.h"
 #include "util.h"
 
 /*
@@ -34,15 +34,32 @@
 
 extern char **environ;
 
-enum status dropbox_init(struct dropbox_section *section)
+struct dropbox_section {
+	bool running;
+	bool uptodate;
+	struct str status;
+};
+
+static void dropbox_free(void *data);
+
+static void *dropbox_init(int epoll_fd)
 {
-	memset(section, 0, sizeof(*section));
-	return dropbox_update(section);
+	struct dropbox_section *section;
+
+	section = malloc(sizeof(*section));
+	if (!section) {
+		perror("malloc");
+		return NULL;
+	}
+	str_init(&section->status);
+	return section;
 }
 
-void dropbox_free(struct dropbox_section *section)
+static void dropbox_free(void *data)
 {
+	struct dropbox_section *section = data;
 	str_free(&section->status);
+	free(section);
 }
 
 static int read_all_output(struct dropbox_section *section, pid_t pid,
@@ -91,21 +108,24 @@ out:
 	return ret2;
 }
 
-enum status dropbox_update(struct dropbox_section *section)
+static int dropbox_update(void *data)
 {
+	struct dropbox_section *section = data;
 	char *argv[] = {"dropbox.py", "status", NULL};
 	posix_spawn_file_actions_t file_actions;
 	posix_spawnattr_t attr;
-	enum status status = SECTION_FATAL;
+	int status = -1;
 	sigset_t mask;
 	int pipefd[2] = {-1, -1};
 	pid_t pid;
 	int ret;
 
+	section->running = false;
+
 	errno = posix_spawn_file_actions_init(&file_actions);
 	if (errno) {
 		perror("posix_spawn_file_actions_init");
-		return SECTION_FATAL;
+		return -1;
 	}
 
 	errno = posix_spawnattr_init(&attr);
@@ -150,7 +170,7 @@ enum status dropbox_update(struct dropbox_section *section)
 			     environ);
 	if (errno) {
 		perror("posix_spawnp");
-		status = SECTION_ERROR;
+		status = 0;
 		goto out;
 	}
 
@@ -158,15 +178,13 @@ enum status dropbox_update(struct dropbox_section *section)
 	ret = read_all_output(section, pid, pipefd[0]);
 	if (ret) {
 		if (errno == ENOMEM)
-			status = SECTION_FATAL;
+			status = -1;
 		else
-			status = SECTION_ERROR;
+			status = 0;
 		goto out;
 	}
 
-	if (strcmp(section->status.buf, "Dropbox isn't running!\n") == 0)
-		section->running = false;
-	else
+	if (strcmp(section->status.buf, "Dropbox isn't running!\n") != 0)
 		section->running = true;
 
 	if (strcmp(section->status.buf, "Up to date\n") == 0 ||
@@ -175,7 +193,7 @@ enum status dropbox_update(struct dropbox_section *section)
 	else
 		section->uptodate = false;
 
-	status = SECTION_SUCCESS;
+	status = 0;
 out:
 	close(pipefd[0]);
 	close(pipefd[1]);
@@ -186,11 +204,15 @@ out_file_actions:
 	return status;
 }
 
-int append_dropbox(const struct dropbox_section *section, struct str *str)
+static int dropbox_append(void *data, struct str *str, bool wordy)
 {
+	struct dropbox_section *section = data;
 	struct timespec tp;
 	char *c;
 	int ret;
+
+	if (!section->running)
+		return 0;
 
 	ret = clock_gettime(CLOCK_MONOTONIC, &tp);
 	if (ret) {
@@ -216,3 +238,17 @@ int append_dropbox(const struct dropbox_section *section, struct str *str)
 
 	return str_separator(str);
 }
+
+static int dropbox_plugin_init(void)
+{
+	struct section section = {
+		.init_func = dropbox_init,
+		.free_func = dropbox_free,
+		.timer_update_func = dropbox_update,
+		.append_func = dropbox_append,
+	};
+
+	return register_section("dropbox", &section);
+}
+
+plugin_init(dropbox_plugin_init);

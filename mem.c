@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Omar Sandoval
+ * Copyright (C) 2015-2016 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,32 +21,51 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sections.h"
+#include "plugin.h"
 #include "util.h"
 
-enum status mem_init(struct mem_section *section)
+struct mem_section {
+	/* Memory usage as a percent. */
+	double mem_usage;
+
+	char *buf;
+	size_t n;
+};
+
+static void mem_free(void *data);
+
+static void *mem_init(int epoll_fd)
 {
-	memset(section, 0, sizeof(*section));
+	struct mem_section *section;
+
+	section = malloc(sizeof(*section));
+	if (!section) {
+		perror("malloc");
+		return NULL;
+	}
 	section->n = 100;
 	section->buf = malloc(section->n);
 	if (!section->buf) {
 		perror("malloc");
-		return SECTION_FATAL;
+		mem_free(section);
+		return NULL;
 	}
-
-	return mem_update(section);
+	return section;
 }
 
-void mem_free(struct mem_section *section)
+static void mem_free(void *data)
 {
+	struct mem_section *section = data;
 	free(section->buf);
+	free(section);
 }
 
-enum status mem_update(struct mem_section *section)
+static int mem_update(void *data)
 {
+	struct mem_section *section = data;
 	FILE *file;
 	ssize_t ssret;
-	enum status status = SECTION_SUCCESS;
+	int status;
 	long long memtotal = -1;
 	long long memavailable = -1;
 
@@ -54,10 +73,10 @@ enum status mem_update(struct mem_section *section)
 	if (!file) {
 		if (errno == ENOENT) {
 			fprintf(stderr, "/proc/meminfo does not exist\n");
-			return SECTION_ERROR;
+			return 0;
 		}
 		perror("fopen(\"/proc/meminfo\")");
-		return SECTION_FATAL;
+		return -1;
 	}
 
 	while (errno = 0, (ssret = getline(&section->buf, &section->n, file)) != -1) {
@@ -67,32 +86,47 @@ enum status mem_update(struct mem_section *section)
 	}
 	if (ferror(file)) {
 		perror("getline(\"/proc/meminfo\")");
-		status = SECTION_FATAL;
+		status = -1;
 		goto out;
 	}
 	if (memtotal < 0) {
 		fprintf(stderr, "Missing MemTotal in /proc/meminfo\n");
-		status = SECTION_ERROR;
+		status = 0;
+		goto out;
 	}
 	if (memavailable < 0) {
 		fprintf(stderr, "Missing MemAvailable in /proc/meminfo\n");
-		status = SECTION_ERROR;
-	}
-	if (status == SECTION_ERROR)
+		status = 0;
 		goto out;
+	}
 
 	section->mem_usage = 100.0 * ((double)(memtotal - memavailable) / memtotal);
-
+	status = 0;
 out:
 	fclose(file);
 	return status;
 }
 
-int append_mem(const struct mem_section *section, struct str *str)
+static int mem_append(void *data, struct str *str, bool wordy)
 {
+	struct mem_section *section = data;
 	if (str_append_icon(str, "mem"))
 		return -1;
 	if (str_appendf(str, "%3.0f%%", section->mem_usage))
 		return -1;
 	return str_separator(str);
 }
+
+static int mem_plugin_init(void)
+{
+	struct section section = {
+		.init_func = mem_init,
+		.free_func = mem_free,
+		.timer_update_func = mem_update,
+		.append_func = mem_append,
+	};
+
+	return register_section("mem", &section);
+}
+
+plugin_init(mem_plugin_init);

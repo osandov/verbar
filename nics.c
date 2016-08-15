@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Omar Sandoval
+ * Copyright (C) 2015-2016 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <libnetlink.h>
 #include <linux/netlink.h>
 #include <linux/nl80211.h>
 #include <linux/rtnetlink.h>
@@ -24,7 +25,7 @@
 #include <netlink/socket.h>
 #include <sys/socket.h>
 
-#include "sections.h"
+#include "nics.h"
 
 static int getlink_filter(const struct sockaddr_nl *who, struct nlmsghdr *n,
 			  void *arg)

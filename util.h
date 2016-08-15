@@ -32,6 +32,11 @@ struct str {
 	.cap = 0,	\
 }
 
+static inline void str_init(struct str *str)
+{
+	*str = (struct str)STR_INIT;
+}
+
 static inline void str_free(struct str *str)
 {
 	free(str->buf);

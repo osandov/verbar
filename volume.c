@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Omar Sandoval
+ * Copyright (C) 2015-2016 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,25 +21,55 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <sys/epoll.h>
 #include <sys/types.h>
 
-#include "sections.h"
 #include "pa_watcher.h"
+#include "plugin.h"
 #include "util.h"
 
-enum status volume_init(struct volume_section *section)
+struct volume_section {
+	/* Is the volume muted? */
+	bool muted;
+
+	/* Volume percentage. */
+	double volume;
+
+	pid_t child;
+	struct epoll_callback epoll;
+};
+
+static void volume_free(void *data);
+static int volume_update(struct volume_section *section);
+
+static int volume_epoll_callback(int fd, void *data, uint32_t events)
 {
+	return volume_update(data);
+}
+
+static void *volume_init(int epoll_fd)
+{
+	struct volume_section *section;
+	struct epoll_event ev;
 	int pipefd[2];
 	pid_t pid;
 	int ret;
 
-	memset(section, 0, sizeof(*section));
-	section->fd = -1;
+	section = malloc(sizeof(*section));
+	if (!section) {
+		perror("malloc");
+		return NULL;
+	}
+	section->muted = false;
+	section->volume = 0;
+	section->child = 0;
+	section->epoll.fd = -1;
 
 	ret = pipe2(pipefd, O_CLOEXEC);
 	if (ret) {
 		perror("pipe2");
-		return SECTION_FATAL;
+		volume_free(section);
+		return NULL;
 	}
 
 	pid = fork();
@@ -47,32 +77,45 @@ enum status volume_init(struct volume_section *section)
 		perror("fork");
 		close(pipefd[0]);
 		close(pipefd[1]);
-		return SECTION_FATAL;
+		volume_free(section);
+		return NULL;
 	}
 
-	if (pid) {
-		section->child = pid;
-		section->fd = pipefd[0];
-		close(pipefd[1]);
-		return SECTION_SUCCESS;
-	} else {
+	if (!pid) {
 		close(pipefd[0]);
 		/* TODO: close all other file descriptors? */
 		pa_watcher(pipefd[1]);
 		/* This shouldn't return unless there's an error. */
 		exit(EXIT_FAILURE);
 	}
+
+	close(pipefd[1]);
+	section->child = pid;
+	section->epoll.callback = volume_epoll_callback;
+	section->epoll.fd = pipefd[0];
+	section->epoll.data = section;
+	ev.events = EPOLLIN;
+	ev.data.ptr = &section->epoll;
+
+	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, section->epoll.fd, &ev) == -1) {
+		perror("epoll_ctl");
+		volume_free(section);
+		return NULL;
+	}
+	return section;
 }
 
-void volume_free(struct volume_section *section)
+static void volume_free(void *data)
 {
+	struct volume_section *section = data;
 	if (section->child)
 		kill(section->child, SIGKILL);
-	if (section->fd != -1)
-		close(section->fd);
+	if (section->epoll.fd != -1)
+		close(section->epoll.fd);
+	free(section);
 }
 
-enum status volume_update(struct volume_section *section)
+static int volume_update(struct volume_section *section)
 {
 	struct pa_volume volume;
 	ssize_t ssret;
@@ -81,21 +124,27 @@ enum status volume_update(struct volume_section *section)
 	 * TODO: keep reading while there's stuff in the pipe and just use the
 	 * last one?
 	 */
-	ssret = read(section->fd, &volume, sizeof(volume));
+	ssret = read(section->epoll.fd, &volume, sizeof(volume));
 	if (ssret == -1) {
-		perror("read");
-		return SECTION_FATAL;
+		perror("read(pa_watcher)");
+		return -1;
 	}
-	assert(ssret == sizeof(volume));
+	if (ssret != sizeof(volume)) {
+		fprintf(stderr, "short read from pa_watcher\n");
+		return -1;
+	}
 
 	section->muted = volume.muted;
 	section->volume = volume.volume;
 
-	return SECTION_SUCCESS;
+	request_update();
+
+	return 0;
 }
 
-int append_volume(const struct volume_section *section, struct str *str)
+static int volume_append(void *data, struct str *str, bool wordy)
 {
+	struct volume_section *section = data;
 	if (section->muted) {
 		if (str_append_icon(str, "spkr_mute"))
 			return -1;
@@ -109,3 +158,16 @@ int append_volume(const struct volume_section *section, struct str *str)
 	}
 	return str_separator(str);
 }
+
+static int volume_plugin_init(void)
+{
+	struct section section = {
+		.init_func = volume_init,
+		.free_func = volume_free,
+		.append_func = volume_append,
+	};
+
+	return register_section("volume", &section);
+}
+
+plugin_init(volume_plugin_init);

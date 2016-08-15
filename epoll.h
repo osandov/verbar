@@ -15,38 +15,15 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef NICS_H
-#define NICS_H
+#ifndef VERBAR_EPOLL_H
+#define VERBAR_EPOLL_H
 
-#include <stdbool.h>
+#include <stdint.h>
 
-struct nic {
-	unsigned int have_addr : 1;
-	unsigned int is_wifi : 1;
-	unsigned int have_wifi_signal : 1;
-
-	int ifindex;
-	char *name;
-
-	char *ssid;
-	size_t ssid_len;
-	int signal;
-
-	struct nic *next;
+struct epoll_callback {
+	int (*callback)(int, void *, uint32_t);
+	int fd;
+	void *data;
 };
 
-struct net_section {
-	struct nic *nics_head, *nics_tail;
-
-	struct rtnl_handle rth;
-	bool rth_init;
-
-	struct nl_sock *nl_sock;
-	int nl80211_id;
-};
-
-int enumerate_nics(struct net_section *section);
-int find_wifi_nics(struct net_section *section);
-int get_wifi_info(struct net_section *section, struct nic *nic);
-
-#endif /* NICS_H */
+#endif /* VERBAR_EPOLL_H */

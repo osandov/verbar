@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Omar Sandoval
+ * Copyright (C) 2015-2016 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <libnetlink.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -25,42 +26,52 @@
 #include <sys/socket.h>
 
 #include "nics.h"
-#include "sections.h"
+#include "plugin.h"
+#include "util.h"
 
-enum status net_init(struct net_section *section)
+static void net_free(void *data);
+
+static void *net_init(int epoll_fd)
 {
+	struct net_section *section;
+
+	section = malloc(sizeof(*section));
+	if (!section) {
+		perror("malloc");
+		return NULL;
+	}
+	section->nics_head = section->nics_tail = NULL;
+	section->rth_init = false;
+	section->nl_sock = NULL;
+
 	if (rtnl_open(&section->rth, 0) < 0) {
-		fprintf(stderr, "Failed to open rtnetlink socket\n");
-		goto out;
+		fprintf(stderr, "failed to open rtnetlink socket\n");
+		net_free(section);
+		return NULL;
 	}
 	section->rth_init = true;
 
 	section->nl_sock = nl_socket_alloc();
 	if (!section->nl_sock) {
-		fprintf(stderr, "Failed to allocate netlink socket\n");
-		goto out_rth;
+		fprintf(stderr, "failed to allocate netlink socket\n");
+		net_free(section);
+		return NULL;
 	}
 	nl_socket_set_buffer_size(section->nl_sock, 8192, 8192);
 
 	if (genl_connect(section->nl_sock)) {
-		fprintf(stderr, "Failed to connect to generic netlink\n");
-		goto out_nl_sock;
+		fprintf(stderr, "failed to connect to generic netlink\n");
+		net_free(section);
+		return NULL;
 	}
 
 	section->nl80211_id = genl_ctrl_resolve(section->nl_sock, "nl80211");
 	if (section->nl80211_id < 0) {
 		fprintf(stderr, "nl80211 not found\n");
-		goto out_nl_sock;
+		net_free(section);
+		return NULL;
 	}
-
-	return net_update(section);
-
-out_nl_sock:
-	nl_socket_free(section->nl_sock);
-out_rth:
-	rtnl_close(&section->rth);
-out:
-	return SECTION_FATAL;
+	return section;
 }
 
 static void free_nics(struct net_section *section)
@@ -79,39 +90,43 @@ static void free_nics(struct net_section *section)
 	section->nics_tail = NULL;
 }
 
-void net_free(struct net_section *section)
+static void net_free(void *data)
 {
+	struct net_section *section = data;
 	free_nics(section);
-	nl_socket_free(section->nl_sock);
+	if (section->nl_sock)
+		nl_socket_free(section->nl_sock);
 	if (section->rth_init)
 		rtnl_close(&section->rth);
+	free(section);
 }
 
-enum status net_update(struct net_section *section)
+static int net_update(void *data)
 {
+	struct net_section *section = data;
 	struct nic *nic;
 
 	free_nics(section);
 
 	if (enumerate_nics(section))
-		return SECTION_FATAL;
+		return -1;
 
 	if (find_wifi_nics(section))
-		return SECTION_FATAL;
+		return -1;
 
 	nic = section->nics_head;
 	while (nic) {
 		if (nic->is_wifi) {
 			if (get_wifi_info(section, nic))
-				return SECTION_FATAL;
+				return -1;
 		}
 		nic = nic->next;
 	}
 
-	return SECTION_SUCCESS;
+	return 0;
 }
 
-static int append_nic(const struct nic *nic, struct str *str)
+static int append_nic(const struct nic *nic, struct str *str, bool wordy)
 {
 	const int high_thresh = 66;
 	const int low_thresh = 33;
@@ -174,16 +189,31 @@ static int append_nic(const struct nic *nic, struct str *str)
 	return 0;
 }
 
-int append_net(const struct net_section *section, struct str *str)
+static int net_append(void *data, struct str *str, bool wordy)
 {
+	struct net_section *section = data;
 	struct nic *nic;
 
 	nic = section->nics_head;
 	while (nic) {
-		if (append_nic(nic, str))
+		if (append_nic(nic, str, wordy))
 			return -1;
 		nic = nic->next;
 	}
 
 	return 0;
 }
+
+static int net_plugin_init(void)
+{
+	struct section section = {
+		.init_func = net_init,
+		.free_func = net_free,
+		.timer_update_func = net_update,
+		.append_func = net_append,
+	};
+
+	return register_section("net", &section);
+}
+
+plugin_init(net_plugin_init);

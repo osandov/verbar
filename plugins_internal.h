@@ -15,38 +15,17 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef NICS_H
-#define NICS_H
+#ifndef PLUGINS_INTERNAL_H
+#define PLUGINS_INTERNAL_H
 
-#include <stdbool.h>
+#include <stddef.h>
 
-struct nic {
-	unsigned int have_addr : 1;
-	unsigned int is_wifi : 1;
-	unsigned int have_wifi_signal : 1;
+#include "plugin.h"
 
-	int ifindex;
-	char *name;
+int init_plugins(void);
+int init_sections(int epoll_fd, const char **sections, size_t count);
+void free_sections(void);
+int update_timer_sections(void);
+int append_sections(struct str *str, bool wordy);
 
-	char *ssid;
-	size_t ssid_len;
-	int signal;
-
-	struct nic *next;
-};
-
-struct net_section {
-	struct nic *nics_head, *nics_tail;
-
-	struct rtnl_handle rth;
-	bool rth_init;
-
-	struct nl_sock *nl_sock;
-	int nl80211_id;
-};
-
-int enumerate_nics(struct net_section *section);
-int find_wifi_nics(struct net_section *section);
-int get_wifi_info(struct net_section *section, struct nic *nic);
-
-#endif /* NICS_H */
+#endif /* PLUGINS_INTERNAL_H */

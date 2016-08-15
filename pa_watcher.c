@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Omar Sandoval
+ * Copyright (C) 2015-2016 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,7 +28,6 @@
 static pa_mainloop *mainloop;
 static pa_context *context;
 static int pipefd;
-
 
 static void context_subscribe_callback(pa_context *c,
 				       pa_subscription_event_type_t t,
