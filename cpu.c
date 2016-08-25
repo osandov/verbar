@@ -100,7 +100,6 @@ static int cpu_update(void *data)
 			section->cpu_usage = 100.0 * ((double)interval_active /
 						      (double)interval_total);
 		} else {
-			fprintf(stderr, "Missing cpu in /proc/stat\n");
 			section->cpu_usage = 0.0;
 		}
 
