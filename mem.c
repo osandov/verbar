@@ -64,7 +64,6 @@ static int mem_update(void *data)
 {
 	struct mem_section *section = data;
 	FILE *file;
-	ssize_t ssret;
 	int status;
 	long long memtotal = -1;
 	long long memavailable = -1;
@@ -79,7 +78,7 @@ static int mem_update(void *data)
 		return -1;
 	}
 
-	while (errno = 0, (ssret = getline(&section->buf, &section->n, file)) != -1) {
+	while (getline(&section->buf, &section->n, file) != -1) {
 		if (sscanf(section->buf, "MemTotal: %lld", &memtotal) == 1 ||
 		    sscanf(section->buf, "MemAvailable: %lld", &memavailable) == 1)
 			continue;

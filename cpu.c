@@ -67,7 +67,6 @@ static int cpu_update(void *data)
 {
 	struct cpu_section *section = data;
 	FILE *file;
-	ssize_t ssret;
 	int status;
 
 	file = fopen("/proc/stat", "rb");
@@ -81,7 +80,7 @@ static int cpu_update(void *data)
 		}
 	}
 
-	while (errno = 0, (ssret = getline(&section->buf, &section->n, file)) != -1) {
+	while (getline(&section->buf, &section->n, file) != -1) {
 		long long active, user, system, idle;
 		long long interval_active, interval_idle, interval_total;
 
