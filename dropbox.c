@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Omar Sandoval
+ * Copyright (C) 2015-2017 Omar Sandoval
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,29 +15,24 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <errno.h>
-#include <spawn.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/wait.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include "plugin.h"
 #include "util.h"
 
-/*
- * TODO: investigate a way to implement this without shelling out to dropbox.py.
- */
-
-extern char **environ;
-
 struct dropbox_section {
 	bool running;
 	bool uptodate;
-	struct str status;
+	char *status;
+
+	char *buf;
+	size_t n;
 };
 
 static void dropbox_free(void *data);
@@ -51,164 +46,145 @@ static void *dropbox_init(int epoll_fd)
 		perror("malloc");
 		return NULL;
 	}
-	str_init(&section->status);
+	section->n = 128;
+	section->buf = malloc(section->n);
+	if (!section->buf) {
+		perror("malloc");
+		dropbox_free(section);
+		return NULL;
+	}
 	return section;
 }
 
 static void dropbox_free(void *data)
 {
 	struct dropbox_section *section = data;
-	str_free(&section->status);
+	free(section->buf);
 	free(section);
 }
 
-static int read_all_output(struct dropbox_section *section, pid_t pid,
-			   int pipefd)
+static FILE *connect_to_dropboxd(void)
 {
-	char buf[1024];
-	ssize_t ssret;
-	int status;
-	int ret, ret2 = 0;
+	struct sockaddr_un addr = {
+		.sun_family = AF_UNIX,
+	};
+	FILE *sock;
+	char *home;
+	int sockfd;
+	int ret;
 
-	section->status.len = 0;
-	for (;;) {
-		ssret = read(pipefd, buf, sizeof(buf));
-		if (ssret == -1) {
-			perror("read(pipefd)");
-			ret2 = -1;
-			goto wait;
-		}
-		if (ssret == 0)
-			break;
-		ret = str_append_buf(&section->status, buf, ssret);
-		if (ret) {
-			ret2 = -1;
-			goto wait;
-		}
+	home = getenv("HOME");
+	if (!home) {
+		fprintf(stderr, "HOME is not set\n");
+		return NULL;
 	}
-	ret = str_null_terminate(&section->status);
-	if (ret)
-		ret2 = -1;
 
-wait:
-	ret = waitpid(pid, &status, 0);
+	ret = snprintf(addr.sun_path, sizeof(addr.sun_path),
+		       "%s/.dropbox/command_socket", home);
+	if (ret >= sizeof(addr.sun_path)) {
+		fprintf(stderr, "path to command socket is too long\n");
+		return NULL;
+	}
+
+	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (sockfd == -1) {
+		perror("socket");
+		return NULL;
+	}
+
+	ret = connect(sockfd, &addr, sizeof(addr));
 	if (ret == -1) {
-		perror("waitpid");
-		ret2 = -1;
-		goto out;
-	}
-	if (!WIFEXITED(status) || WEXITSTATUS(status)) {
-		fprintf(stderr, "dropbox.py exited abnormally\n");
-		errno = EINVAL;
-		ret2 = -1;
+		perror("connect(\"~/.dropbox/command_socket\")");
+		close(sockfd);
+		return NULL;
 	}
 
-out:
-	close(pipefd);
-	return ret2;
+	sock = fdopen(sockfd, "rb");
+	if (!sock) {
+		perror("fdopen");
+		close(sockfd);
+		return NULL;
+	}
+
+	return sock;
+}
+
+static int sendall(int fd, const void *buf, size_t len)
+{
+	const char *p = buf;
+	ssize_t sret;
+
+	while (len > 0) {
+		sret = write(fd, p, len);
+		if (sret == -1)
+			return -1;
+		p += sret;
+		len -= sret;
+	}
+	return 0;
+}
+
+static int read_status(struct dropbox_section *section, FILE *sock)
+{
+	char ok[3];
+
+	if (fread(ok, 1, 3, sock) != 3 || memcmp(ok, "ok\n", 3) != 0) {
+		fprintf(stderr, "dropbox command error\n");
+		return -1;
+	}
+
+	while (getline(&section->buf, &section->n, sock) != -1) {
+		if (strncmp(section->buf, "status\t", 7) == 0) {
+			section->status = section->buf + 7;
+			*strchrnul(section->status, '\n') = '\0';
+			*strchrnul(section->status, '\t') = '\0';
+			section->uptodate = strcmp(section->status, "Up to date") == 0;
+			return 0;
+		} else if (strcmp(section->buf, "done\n") == 0) {
+			section->status = strcpy(section->buf, "Idle");
+			section->uptodate = true;
+			return 0;
+		}
+	}
+	if (ferror(sock))
+		perror("getline(\"~/.dropbox/command_socket\")");
+	return -1;
 }
 
 static int dropbox_update(void *data)
 {
+	static const char *command = "get_dropbox_status\ndone\n";
 	struct dropbox_section *section = data;
-	char *argv[] = {"dropbox.py", "status", NULL};
-	posix_spawn_file_actions_t file_actions;
-	posix_spawnattr_t attr;
-	int status = -1;
-	sigset_t mask;
-	int pipefd[2] = {-1, -1};
-	pid_t pid;
+	FILE *sock;
 	int ret;
 
 	section->running = false;
 
-	errno = posix_spawn_file_actions_init(&file_actions);
-	if (errno) {
-		perror("posix_spawn_file_actions_init");
-		return -1;
-	}
+	sock = connect_to_dropboxd();
+	if (!sock)
+		return 0;
 
-	errno = posix_spawnattr_init(&attr);
-	if (errno) {
-		perror("posix_spawnattr_init");
-		goto out_file_actions;
-	}
-
-	ret = pipe(pipefd);
-	if (ret) {
-		perror("pipe2");
-		goto out_spawnattr;
-	}
-
-	errno = posix_spawn_file_actions_addclose(&file_actions, pipefd[0]);
-	if (errno) {
-		perror("posix_spawn_file_actions_addclose");
+	ret = sendall(fileno(sock), command, strlen(command));
+	if (ret == -1) {
+		perror("send(\"~/.dropbox/command_socket\")");
 		goto out;
 	}
 
-	errno = posix_spawn_file_actions_adddup2(&file_actions, pipefd[1],
-						 STDOUT_FILENO);
-	if (errno) {
-		perror("posix_spawn_file_actions_adddup2");
+	ret = read_status(section, sock);
+	if (ret == -1)
 		goto out;
-	}
 
-	sigemptyset(&mask);
-	errno = posix_spawnattr_setsigmask(&attr, &mask);
-	if (errno) {
-		perror("posix_spawnattr_setsigmask");
-		goto out;
-	}
-
-	errno = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
-	if (errno) {
-		perror("posix_spawnattr_setflags");
-		goto out;
-	}
-
-	errno = posix_spawnp(&pid, "dropbox-cli", &file_actions, &attr, argv,
-			     environ);
-	if (errno) {
-		perror("posix_spawnp");
-		status = 0;
-		goto out;
-	}
-
-	close(pipefd[1]);
-	ret = read_all_output(section, pid, pipefd[0]);
-	if (ret) {
-		if (errno == ENOMEM)
-			status = -1;
-		else
-			status = 0;
-		goto out;
-	}
-
-	if (strcmp(section->status.buf, "Dropbox isn't running!\n") != 0)
-		section->running = true;
-
-	if (strcmp(section->status.buf, "Up to date\n") == 0 ||
-	    strcmp(section->status.buf, "Idle\n") == 0)
-		section->uptodate = true;
-	else
-		section->uptodate = false;
-
-	status = 0;
+	section->running = true;
 out:
-	close(pipefd[0]);
-	close(pipefd[1]);
-out_spawnattr:
-	posix_spawnattr_destroy(&attr);
-out_file_actions:
-	posix_spawn_file_actions_destroy(&file_actions);
-	return status;
+	shutdown(fileno(sock), SHUT_RDWR);
+	fclose(sock);
+	return 0;
 }
 
 static int dropbox_append(void *data, struct str *str, bool wordy)
 {
 	struct dropbox_section *section = data;
 	struct timespec tp;
-	char *c;
 	int ret;
 
 	if (!section->running)
@@ -231,8 +207,7 @@ static int dropbox_append(void *data, struct str *str, bool wordy)
 		if (str_append(str, " "))
 			return -1;
 
-		c = strchrnul(section->status.buf, '\n');
-		if (str_append_buf(str, section->status.buf, c - section->status.buf))
+		if (str_append(str, section->status))
 			return -1;
 	}
 
