@@ -176,13 +176,19 @@ static int append_nic(const struct nic *nic, struct str *str, bool wordy)
 					return -1;
 			}
 		}
-	} else {
-		if (nic->have_addr)
-			ret = str_append_icon(str, "wired");
-		else
-			ret = str_append_icon(str, "wired_noaddr");
-		if (ret)
+	} else if (nic->have_addr) {
+		if (str_append_icon(str, "wired"))
 			return -1;
+
+		if (wordy) {
+			if (str_append(str, " "))
+				return -1;
+
+			if (str_append_escaped(str, nic->name, strlen(nic->name)))
+				return -1;
+		}
+	} else {
+		return 0;
 	}
 	if (str_separator(str))
 		return -1;
