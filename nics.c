@@ -97,7 +97,7 @@ int enumerate_nics(struct net_section *section)
 		return -1;
 	}
 
-	if (rtnl_wilddump_request(&section->rth, AF_UNSPEC, RTM_GETADDR) < 0) {
+	if (rtnl_wilddump_request(&section->rth, AF_INET, RTM_GETADDR) < 0) {
 		fprintf(stderr, "rtnl_wilddump_request() failed");
 		return -1;
 	}
