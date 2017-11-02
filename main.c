@@ -26,10 +26,8 @@
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
-#include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <sys/types.h>
-#include <sys/un.h>
 #include <X11/Xlib.h>
 
 #include "plugins_internal.h"
@@ -69,10 +67,10 @@ static int update_statusbar(void)
 		return -1;
 
 	append_sections(&status_str, wordy);
-	
+
 	if (str_null_terminate(&status_str))
 		return -1;
-	
+
 	XStoreName(dpy, root, status_str.buf);
 	XFlush(dpy);
 
@@ -90,9 +88,14 @@ static int signal_fd_callback(int fd, void *data, uint32_t events)
 		return -1;
 	}
 	assert(ssret == sizeof(ssi));
-	fprintf(stderr, "got signal %s; exiting\n",
-		strsignal(ssi.ssi_signo));
-	quit = true;
+	if (ssi.ssi_signo == SIGUSR1) {
+		wordy = !wordy;
+		update = true;
+	} else {
+		fprintf(stderr, "got signal %s; exiting\n",
+			strsignal(ssi.ssi_signo));
+		quit = true;
+	}
 	return 0;
 }
 
@@ -111,6 +114,7 @@ static int signal_fd_init(int epoll_fd)
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGINT);
 	sigaddset(&mask, SIGTERM);
+	sigaddset(&mask, SIGUSR1);
 	ret = sigprocmask(SIG_BLOCK, &mask, NULL);
 	if (ret == -1) {
 		perror("sigprocmask");
@@ -173,113 +177,6 @@ static int timer_fd_init(int epoll_fd)
 	timer_cb.fd = fd;
 	ev.events = EPOLLIN;
 	ev.data.ptr = &timer_cb;
-
-	return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
-}
-
-static int ctl_fd_callback(int fd, void *data, uint32_t events)
-{
-	char buf[20];
-	ssize_t ssret;
-
-	ssret = read(fd, buf, sizeof(buf));
-	if (ssret == -1) {
-		perror("read(ctl_fd)");
-		return -1;
-	}
-
-	if (ssret == strlen("togglewordy") &&
-	    memcmp(buf, "togglewordy", ssret) == 0) {
-		wordy ^= true;
-		update = true;
-	}
-	return 0;
-}
-
-static struct epoll_callback ctl_cb = {
-	.callback = ctl_fd_callback,
-	.fd = -1,
-};
-
-static int get_ctl_addr(struct sockaddr_un *addr)
-{
-	char *env, *home, *display;
-	int ret;
-
-	memset(addr, 0, sizeof(*addr));
-	addr->sun_family = AF_UNIX;
-
-	env = getenv("HOME");
-	if (!env) {
-		fprintf(stderr, "HOME is not set\n");
-		return -1;
-	}
-	home = strdup(env);
-	if (!home) {
-		perror("strdup");
-		return -1;
-	}
-
-	env = getenv("DISPLAY");
-	if (!env) {
-		fprintf(stderr, "DISPLAY is not set\n");
-		free(home);
-		return -1;
-	}
-	display = strdup(env);
-	if (!display) {
-		perror("strdup");
-		free(home);
-		return -1;
-	}
-
-	ret = snprintf(addr->sun_path, sizeof(addr->sun_path),
-		       "%s/.statusbar-%s.ctl", home, display);
-	if (ret >= sizeof(addr->sun_path)) {
-		fprintf(stderr, "Control socket path too long\n");
-		ret = -1;
-	} else {
-		ret = 0;
-	}
-
-	free(home);
-	free(display);
-	return ret;
-}
-
-static struct sockaddr_un ctl_addr;
-
-static int ctl_fd_init(int epoll_fd)
-{
-	struct epoll_event ev;
-	int ret;
-	int fd;
-
-	ret = get_ctl_addr(&ctl_addr);
-	if (ret == -1)
-		return -1;
-
-	fd = socket(AF_UNIX, SOCK_DGRAM, 0);
-	if (fd == -1) {
-		perror("socket");
-		return -1;
-	}
-
-	ret = unlink(ctl_addr.sun_path);
-	if (ret == -1 && errno != ENOENT) {
-		perror("unlink");
-		return -1;
-	}
-
-	ret = bind(fd, &ctl_addr, sizeof(ctl_addr));
-	if (ret == -1) {
-		perror("bind");
-		return -1;
-	}
-
-	ctl_cb.fd = fd;
-	ev.events = EPOLLIN;
-	ev.data.ptr = &ctl_cb;
 
 	return epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 }
@@ -363,12 +260,6 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
-	ret = ctl_fd_init(epoll_fd);
-	if (ret == -1) {
-		status = EXIT_FAILURE;
-		goto out;
-	}
-
 	if (init_plugins()) {
 		status = EXIT_FAILURE;
 		goto out;
@@ -433,10 +324,6 @@ out:
 	if (epoll_fd != -1)
 		close(epoll_fd);
 	free_sections();
-	if (ctl_cb.fd != -1) {
-		close(ctl_cb.fd);
-		unlink(ctl_addr.sun_path);
-	}
 	if (timer_cb.fd != -1)
 		close(timer_cb.fd);
 	if (signal_cb.fd != -1)
