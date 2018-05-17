@@ -21,6 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern const char *icon_path;
+
 struct str {
 	char *buf;
 	size_t len, cap;

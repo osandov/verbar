@@ -184,12 +184,13 @@ static int timer_fd_init(int epoll_fd)
 static void usage(bool error)
 {
 	fprintf(error ? stderr : stdout,
-		"usage: %s [--wordy]\n"
+		"usage: %s [--icons PATH] [--wordy]\n"
 		"\n"
 		"Gather system information and set the root window name\n"
 		"\n"
 		"Options:\n"
-		"  -w, --wordy    enable wordy output on startup\n"
+		"  -i, --icons PATH    directory containing icon files\n"
+		"  -w, --wordy         enable wordy output on startup\n"
 		"\n"
 		"Miscellaneous:\n"
 		"  -h, --help     display this help message and exit\n",
@@ -200,6 +201,7 @@ static void usage(bool error)
 int main(int argc, char **argv)
 {
 	struct option long_options[] = {
+		{"icons", required_argument, NULL, 'i'},
 		{"wordy", no_argument, NULL, 'w'},
 		{"help", no_argument, NULL, 'h'},
 	};
@@ -215,11 +217,14 @@ int main(int argc, char **argv)
 	for (;;) {
 		int c;
 
-		c = getopt_long(argc, argv, "wh", long_options, NULL);
+		c = getopt_long(argc, argv, "i:wh", long_options, NULL);
 		if (c == -1)
 			break;
 
 		switch (c) {
+		case 'i':
+			icon_path = optarg;
+			break;
 		case 'w':
 			wordy = true;
 			break;

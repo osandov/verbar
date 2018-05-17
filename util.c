@@ -23,6 +23,8 @@
 
 #include "util.h"
 
+const char *icon_path;
+
 static int str_realloc(struct str *str, size_t cap)
 {
 	void *buf;
@@ -122,15 +124,10 @@ int str_append_escaped(struct str *str, char *buf, size_t len)
 
 int str_append_icon(struct str *str, char *icon)
 {
-	char *home = getenv("HOME");
+	if (!icon_path)
+		return 0;
 
-	if (!home) {
-		fprintf(stderr, "HOME is not set\n");
-		return -1;
-	}
-
-	return str_appendf(str, "\x1b]9;%s/.dotfiles/wm/icons/%s.xbm\a",
-			   home, icon);
+	return str_appendf(str, "\x1b]9;%s/%s.xbm\a", icon_path, icon);
 }
 
 int parse_int(char *str, long long *ret)
