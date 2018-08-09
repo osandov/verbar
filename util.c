@@ -21,7 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "util.h"
+#include "verbar_internal.h"
 
 const char *icon_path;
 
@@ -43,7 +43,7 @@ static int str_realloc(struct str *str, size_t cap)
 	return 0;
 }
 
-int str_append_buf(struct str *str, char *buf, size_t len)
+int str_appendn(struct str *str, const char *buf, size_t len)
 {
 	int ret;
 
@@ -57,7 +57,7 @@ int str_append_buf(struct str *str, char *buf, size_t len)
 	return 0;
 }
 
-int str_appendf(struct str *str, char *format, ...)
+int str_appendf(struct str *str, const char *format, ...)
 {
 	va_list ap;
 	char *buf;
@@ -70,12 +70,12 @@ int str_appendf(struct str *str, char *format, ...)
 	if (ret == -1)
 		return -1;
 
-	ret = str_append_buf(str, buf, ret);
+	ret = str_appendn(str, buf, ret);
 	free(buf);
 	return ret;
 }
 
-int str_append_escaped(struct str *str, char *buf, size_t len)
+int str_append_escaped(struct str *str, const char *buf, size_t len)
 {
 	int ret;
 	size_t i;
@@ -111,7 +111,7 @@ int str_append_escaped(struct str *str, char *buf, size_t len)
 			break;
 		default:
 			if (isprint(buf[i]))
-				ret = str_append_buf(str, &buf[i], 1);
+				ret = str_appendn(str, &buf[i], 1);
 			else
 				ret = str_appendf(str, "\\x%x", buf[i]);
 			break;
@@ -122,7 +122,7 @@ int str_append_escaped(struct str *str, char *buf, size_t len)
 	return 0;
 }
 
-int str_append_icon(struct str *str, char *icon)
+int str_append_icon(struct str *str, const char *icon)
 {
 	if (!icon_path)
 		return 0;
@@ -130,7 +130,7 @@ int str_append_icon(struct str *str, char *icon)
 	return str_appendf(str, "\x1b]9;%s/%s.xbm\a", icon_path, icon);
 }
 
-int parse_int(char *str, long long *ret)
+int parse_int(const char *str, long long *ret)
 {
 	char *endptr;
 
@@ -145,7 +145,7 @@ int parse_int(char *str, long long *ret)
 	return 0;
 }
 
-int parse_int_file(char *path, long long *lret)
+int parse_int_file(const char *path, long long *lret)
 {
 	FILE *file;
 	int ret;

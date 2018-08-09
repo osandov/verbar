@@ -18,8 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "plugin.h"
-#include "util.h"
+#include "verbar.h"
 
 #define AC "/sys/class/power_supply/AC/online"
 #define BAT "/sys/class/power_supply/BAT0/capacity"
@@ -100,16 +99,11 @@ static int power_append(void *data, struct str *str, bool wordy)
 	return str_separator(str);
 }
 
-static int power_plugin_init(void)
-{
-	struct section section = {
-		.init_func = power_init,
-		.free_func = power_free,
-		.timer_update_func = power_update,
-		.append_func = power_append,
-	};
-
-	return register_section("power", &section);
-}
-
-plugin_init(power_plugin_init);
+static const struct section power_section = {
+	.name = "power",
+	.init = power_init,
+	.free = power_free,
+	.timer_update = power_update,
+	.append = power_append,
+};
+register_section(power_section);

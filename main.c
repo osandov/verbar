@@ -30,8 +30,7 @@
 #include <sys/types.h>
 #include <X11/Xlib.h>
 
-#include "plugins_internal.h"
-#include "util.h"
+#include "verbar_internal.h"
 
 static const char *progname = "verbar";
 
@@ -52,7 +51,7 @@ static const char *config[] = {
 
 static bool quit, update, wordy;
 
-static struct str status_str = STR_INIT;
+static struct str status_str;
 
 void request_update(void)
 {
@@ -205,7 +204,6 @@ int main(int argc, char **argv)
 		{"wordy", no_argument, NULL, 'w'},
 		{"help", no_argument, NULL, 'h'},
 	};
-	struct epoll_event events[10];
 	int epoll_fd = -1;
 	struct itimerspec it;
 	int ret;
@@ -265,10 +263,6 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
-	if (init_plugins()) {
-		status = EXIT_FAILURE;
-		goto out;
-	}
 	if (init_sections(epoll_fd, config, sizeof(config) / sizeof(*config))) {
 		status = EXIT_FAILURE;
 		goto out;
@@ -290,6 +284,7 @@ int main(int argc, char **argv)
 	}
 
 	while (!quit) {
+		struct epoll_event events[10];
 		int i;
 
 		update = false;

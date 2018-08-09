@@ -23,8 +23,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#include "plugin.h"
-#include "util.h"
+#include "verbar.h"
 
 struct dropbox_section {
 	bool running;
@@ -214,16 +213,11 @@ static int dropbox_append(void *data, struct str *str, bool wordy)
 	return str_separator(str);
 }
 
-static int dropbox_plugin_init(void)
-{
-	struct section section = {
-		.init_func = dropbox_init,
-		.free_func = dropbox_free,
-		.timer_update_func = dropbox_update,
-		.append_func = dropbox_append,
-	};
-
-	return register_section("dropbox", &section);
-}
-
-plugin_init(dropbox_plugin_init);
+static const struct section dropbox_section = {
+	.name = "dropbox",
+	.init = dropbox_init,
+	.free = dropbox_free,
+	.timer_update = dropbox_update,
+	.append = dropbox_append,
+};
+register_section(dropbox_section);

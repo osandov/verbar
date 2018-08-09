@@ -19,10 +19,8 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
-#include "plugin.h"
-#include "util.h"
+#include "verbar.h"
 
 struct mem_section {
 	/* Memory usage as a percent. */
@@ -116,16 +114,11 @@ static int mem_append(void *data, struct str *str, bool wordy)
 	return str_separator(str);
 }
 
-static int mem_plugin_init(void)
-{
-	struct section section = {
-		.init_func = mem_init,
-		.free_func = mem_free,
-		.timer_update_func = mem_update,
-		.append_func = mem_append,
-	};
-
-	return register_section("mem", &section);
-}
-
-plugin_init(mem_plugin_init);
+static const struct section mem_section = {
+	.name = "mem",
+	.init = mem_init,
+	.free = mem_free,
+	.timer_update = mem_update,
+	.append = mem_append,
+};
+register_section(mem_section);

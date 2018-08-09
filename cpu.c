@@ -21,8 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "plugin.h"
-#include "util.h"
+#include "verbar.h"
 
 struct cpu_section {
 	/* CPU usage as a percent. */
@@ -128,16 +127,11 @@ static int cpu_append(void *data, struct str *str, bool wordy)
 	return str_separator(str);
 }
 
-static int cpu_plugin_init(void)
-{
-	struct section section = {
-		.init_func = cpu_init,
-		.free_func = cpu_free,
-		.timer_update_func = cpu_update,
-		.append_func = cpu_append,
-	};
-
-	return register_section("cpu", &section);
-}
-
-plugin_init(cpu_plugin_init);
+static const struct section cpu_section = {
+	.name = "cpu",
+	.init = cpu_init,
+	.free = cpu_free,
+	.timer_update = cpu_update,
+	.append = cpu_append,
+};
+register_section(cpu_section);

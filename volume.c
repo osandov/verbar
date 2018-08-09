@@ -25,8 +25,7 @@
 #include <sys/types.h>
 
 #include "pa_watcher.h"
-#include "plugin.h"
-#include "util.h"
+#include "verbar.h"
 
 struct volume_section {
 	/* Is the volume muted? */
@@ -159,15 +158,10 @@ static int volume_append(void *data, struct str *str, bool wordy)
 	return str_separator(str);
 }
 
-static int volume_plugin_init(void)
-{
-	struct section section = {
-		.init_func = volume_init,
-		.free_func = volume_free,
-		.append_func = volume_append,
-	};
-
-	return register_section("volume", &section);
-}
-
-plugin_init(volume_plugin_init);
+static const struct section volume_section = {
+	.name = "volume",
+	.init = volume_init,
+	.free = volume_free,
+	.append = volume_append,
+};
+register_section(volume_section);

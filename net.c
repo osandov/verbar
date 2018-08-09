@@ -26,8 +26,7 @@
 #include <sys/socket.h>
 
 #include "nics.h"
-#include "plugin.h"
-#include "util.h"
+#include "verbar.h"
 
 static void net_free(void *data);
 
@@ -210,16 +209,11 @@ static int net_append(void *data, struct str *str, bool wordy)
 	return 0;
 }
 
-static int net_plugin_init(void)
-{
-	struct section section = {
-		.init_func = net_init,
-		.free_func = net_free,
-		.timer_update_func = net_update,
-		.append_func = net_append,
-	};
-
-	return register_section("net", &section);
-}
-
-plugin_init(net_plugin_init);
+static const struct section net_section = {
+	.name = "net",
+	.init = net_init,
+	.free = net_free,
+	.timer_update = net_update,
+	.append = net_append,
+};
+register_section(net_section);

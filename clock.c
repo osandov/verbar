@@ -19,8 +19,7 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include "plugin.h"
-#include "util.h"
+#include "verbar.h"
 
 static int clock_append(void *data, struct str *str, bool wordy)
 {
@@ -50,13 +49,8 @@ static int clock_append(void *data, struct str *str, bool wordy)
 	return str_append(str, buf);
 }
 
-static int clock_plugin_init(void)
-{
-	struct section section = {
-		.append_func = clock_append,
-	};
-
-	return register_section("clock", &section);
-}
-
-plugin_init(clock_plugin_init);
+static const struct section clock_section = {
+	.name = "clock",
+	.append = clock_append,
+};
+register_section(clock_section);
