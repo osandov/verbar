@@ -111,6 +111,7 @@ static int signal_fd_init(int epoll_fd)
 	int fd;
 
 	sigemptyset(&mask);
+	sigaddset(&mask, SIGHUP);
 	sigaddset(&mask, SIGINT);
 	sigaddset(&mask, SIGTERM);
 	sigaddset(&mask, SIGUSR1);
