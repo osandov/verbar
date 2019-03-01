@@ -19,10 +19,6 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
-#include <netlink/genl/genl.h>
-#include <netlink/genl/ctrl.h>
-#include <netlink/socket.h>
-#include <sys/socket.h>
 
 #include "nics.h"
 #include "verbar.h"
@@ -40,7 +36,7 @@ static void *net_init(int epoll_fd)
 	}
 	section->nics_head = section->nics_tail = NULL;
 	section->rtnl = NULL;
-	section->nl_sock = NULL;
+	section->genl = NULL;
 
 	section->rtnl = mnl_socket_open(NETLINK_ROUTE);
 	if (!section->rtnl) {
@@ -54,28 +50,25 @@ static void *net_init(int epoll_fd)
 		return NULL;
 	}
 
-	section->rtseq = time(NULL);
-
-	section->nl_sock = nl_socket_alloc();
-	if (!section->nl_sock) {
-		fprintf(stderr, "failed to allocate netlink socket\n");
+	section->genl = mnl_socket_open(NETLINK_GENERIC);
+	if (!section->genl) {
+		perror("mnl_socket_open(NETLINK_GENERIC)");
 		net_free(section);
 		return NULL;
 	}
-	nl_socket_set_buffer_size(section->nl_sock, 8192, 8192);
-
-	if (genl_connect(section->nl_sock)) {
-		fprintf(stderr, "failed to connect to generic netlink\n");
+	if (mnl_socket_bind(section->genl, 0, MNL_SOCKET_AUTOPID) == -1) {
+		perror("mnl_socket_bind(NETLINK_GENERIC)");
 		net_free(section);
 		return NULL;
 	}
 
-	section->nl80211_id = genl_ctrl_resolve(section->nl_sock, "nl80211");
-	if (section->nl80211_id < 0) {
-		fprintf(stderr, "nl80211 not found\n");
+	section->rtseq = section->geseq = time(NULL);
+
+	if (get_nl80211_id(section) == -1) {
 		net_free(section);
 		return NULL;
 	}
+
 	return section;
 }
 
@@ -100,8 +93,8 @@ static void net_free(void *data)
 	struct net_section *section = data;
 
 	free_nics(section);
-	if (section->nl_sock)
-		nl_socket_free(section->nl_sock);
+	if (section->genl)
+		mnl_socket_close(section->genl);
 	if (section->rtnl)
 		mnl_socket_close(section->rtnl);
 	free(section);

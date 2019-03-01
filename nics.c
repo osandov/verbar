@@ -15,27 +15,28 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdlib.h>
+#include <string.h>
+#include <linux/genetlink.h>
 #include <linux/if.h>
 #include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/nl80211.h>
 #include <linux/rtnetlink.h>
-#include <netlink/genl/genl.h>
-#include <netlink/genl/ctrl.h>
-#include <netlink/socket.h>
 #include <sys/socket.h>
 
 #include "nics.h"
 
-static int run_nlmsg(struct net_section *section, struct nlmsghdr *nlh,
-		     char *buf, size_t buflen,
-		     int (*cb)(const struct nlmsghdr *, void *))
+static int run_nlmsg(struct net_section *section, struct mnl_socket *nl,
+		     struct nlmsghdr *nlh, char *buf, size_t buflen,
+		     int (*cb)(const struct nlmsghdr *, void *),
+		     void *data)
 {
-	unsigned int portid = mnl_socket_get_portid(section->rtnl);
+	unsigned int portid = mnl_socket_get_portid(nl);
 	unsigned int seq = nlh->nlmsg_seq;
 
 	nlh->nlmsg_pid = portid;
-	if (mnl_socket_sendto(section->rtnl, nlh, nlh->nlmsg_len) == -1) {
+	if (mnl_socket_sendto(nl, nlh, nlh->nlmsg_len) == -1) {
 		perror("mnl_socket_sendto");
 		return -1;
 	}
@@ -43,7 +44,7 @@ static int run_nlmsg(struct net_section *section, struct nlmsghdr *nlh,
 	for (;;) {
 		int ret;
 
-		ret = mnl_socket_recvfrom(section->rtnl, buf, buflen);
+		ret = mnl_socket_recvfrom(nl, buf, buflen);
 		if (ret == -1) {
 			perror("mnl_socket_recvfrom");
 			return -1;
@@ -51,13 +52,57 @@ static int run_nlmsg(struct net_section *section, struct nlmsghdr *nlh,
 			break;
 		}
 
-		ret = mnl_cb_run(buf, ret, seq, portid, cb, section);
+		ret = mnl_cb_run(buf, ret, seq, portid, cb, data);
 		if (ret == MNL_CB_ERROR) {
 			perror("mnl_cb_run");
 			return -1;
 		} else if (ret == MNL_CB_STOP) {
 			break;
 		}
+	}
+	return 0;
+}
+
+static int nl80211_id_cb(const struct nlmsghdr *nlh, void *data)
+{
+	struct genlmsghdr *genl = mnl_nlmsg_get_payload(nlh);
+	struct nlattr *attr;
+
+	mnl_attr_for_each(attr, nlh, sizeof(*genl)) {
+		if (mnl_attr_get_type(attr) == CTRL_ATTR_FAMILY_ID) {
+			if (mnl_attr_validate(attr, MNL_TYPE_U16) == -1) {
+				perror("mnl_attr_validate(MNL_TYPE_U16)");
+				return MNL_CB_ERROR;
+			}
+			*(unsigned int *)data = mnl_attr_get_u16(attr);
+			break;
+		}
+	}
+	return MNL_CB_OK;
+}
+
+int get_nl80211_id(struct net_section *section)
+{
+	char buf[MNL_SOCKET_BUFFER_SIZE];
+	struct nlmsghdr *nlh;
+	struct genlmsghdr *genl;
+
+	nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type = GENL_ID_CTRL;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+	nlh->nlmsg_seq = section->geseq++;
+	genl = mnl_nlmsg_put_extra_header(nlh, sizeof(*genl));
+	genl->cmd = CTRL_CMD_GETFAMILY;
+	genl->version = 1;
+	mnl_attr_put_u32(nlh, CTRL_ATTR_FAMILY_ID, GENL_ID_CTRL);
+	mnl_attr_put_strz(nlh, CTRL_ATTR_FAMILY_NAME, "nl80211");
+	section->nl80211_id = 0;
+	if (run_nlmsg(section, section->genl, nlh, buf, sizeof(buf),
+		      nl80211_id_cb, &section->nl80211_id) == -1)
+		return -1;
+	if (!section->nl80211_id) {
+		fprintf(stderr, "nl80211 not found\n");
+		return -1;
 	}
 	return 0;
 }
@@ -136,7 +181,8 @@ int enumerate_nics(struct net_section *section)
 	nlh->nlmsg_seq = section->rtseq++;
 	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(*rt));
 	rt->rtgen_family = AF_PACKET;
-	if (run_nlmsg(section, nlh, buf, sizeof(buf), getlink_cb) == -1)
+	if (run_nlmsg(section, section->rtnl, nlh, buf, sizeof(buf),
+		      getlink_cb, section) == -1)
 		return -1;
 
 	nlh = mnl_nlmsg_put_header(buf);
@@ -145,232 +191,168 @@ int enumerate_nics(struct net_section *section)
 	nlh->nlmsg_seq = section->rtseq++;
 	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(*rt));
 	rt->rtgen_family = AF_INET;
-	return run_nlmsg(section, nlh, buf, sizeof(buf), getaddr_cb);
+	return run_nlmsg(section, section->rtnl, nlh, buf, sizeof(buf),
+			 getaddr_cb, section);
 }
 
-static int error_handler(struct sockaddr_nl *nla, struct nlmsgerr *err,
-			 void *arg)
+static int nl80211_iface_cb(const struct nlmsghdr *nlh, void *data)
 {
-	int *ret = arg;
-	*ret = err->error;
-	return NL_STOP;
-}
-
-static int finish_handler(struct nl_msg *msg, void *arg)
-{
-	int *ret = arg;
-	*ret = 0;
-	return NL_SKIP;
-}
-
-static int ack_handler(struct nl_msg *msg, void *arg)
-{
-	int *ret = arg;
-	*ret = 0;
-	return NL_STOP;
-}
-
-static int handle_nl_cmd(struct nl_sock *nl_sock, int nl80211_id,
-			 signed long long devidx, uint8_t cmd, int flags,
-			 int (*handler)(struct nl_msg *, void *), void *arg)
-{
-	struct nl_msg *msg = NULL;
-	struct nl_cb *cb = NULL, *s_cb = NULL;
-	int ret;
-
-	msg = nlmsg_alloc();
-	if (!msg) {
-		fprintf(stderr, "Failed to allocate netlink message\n");
-		ret = -1;
-		goto out;
-	}
-	
-	cb = nl_cb_alloc(NL_CB_DEFAULT);
-	s_cb = nl_cb_alloc(NL_CB_DEFAULT);
-	if (!cb || !s_cb) {
-		fprintf(stderr, "Failed to allocate netlink callbacks\n");
-		ret = -1;
-		goto out;
-	}
-
-	genlmsg_put(msg, 0, 0, nl80211_id, 0, flags, cmd, 0);
-
-	if (devidx)
-		NLA_PUT_U32(msg, NL80211_ATTR_IFINDEX, devidx);
-
-	nl_socket_set_cb(nl_sock, s_cb);
-
-	ret = nl_send_auto_complete(nl_sock, msg);
-	if (ret < 0)
-		goto out;
-
-	nl_cb_err(cb, NL_CB_CUSTOM, error_handler, &ret);
-	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, finish_handler, &ret);
-	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, ack_handler, &ret);
-	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, handler, arg);
-
-	while (ret > 0)
-		nl_recvmsgs(nl_sock, cb);
-
-	ret = 0;
-out:
-	if (s_cb)
-		nl_cb_put(s_cb);
-	if (cb)
-		nl_cb_put(cb);
-	if (msg)
-		nlmsg_free(msg);
-	return ret;
-
-nla_put_failure:
-	fprintf(stderr, "NLA_PUT_U32 failed\n");
-	ret = -1;
-	goto out;
-}
-
-static int iface_handler(struct nl_msg *msg, void *arg)
-{
-	struct net_section *section = arg;
-	struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
-	struct nlattr *tb_msg[NL80211_ATTR_MAX + 1];
+	struct net_section *section = data;
+	struct genlmsghdr *genl = mnl_nlmsg_get_payload(nlh);
+	struct nlattr *attr;
 	struct nic *nic;
-	char *name;
 
-	nla_parse(tb_msg, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
-		  genlmsg_attrlen(gnlh, 0), NULL);
+	mnl_attr_for_each(attr, nlh, sizeof(*genl)) {
+		if (mnl_attr_get_type(attr) == NL80211_ATTR_IFINDEX) {
+			unsigned int ifindex;
 
-	if (tb_msg[NL80211_ATTR_IFNAME]) {
-		name = nla_get_string(tb_msg[NL80211_ATTR_IFNAME]);
-		nic = section->nics_head;
-		while (nic) {
-			if (strcmp(nic->name, name) == 0)
-				nic->is_wifi = true;
-			nic = nic->next;
+			if (mnl_attr_validate(attr, MNL_TYPE_U32) == -1) {
+				perror("mnl_attr_validate(NL80211_ATTR_IFINDEX)");
+				return MNL_CB_ERROR;
+			}
+			ifindex = mnl_attr_get_u32(attr);
+			nic = section->nics_head;
+			while (nic) {
+				if (nic->ifindex == ifindex) {
+					nic->is_wifi = true;
+					break;
+				}
+				nic = nic->next;
+			}
+			break;
 		}
 	}
-
-	return NL_SKIP;
+	return MNL_CB_OK;
 }
 
 int find_wifi_nics(struct net_section *section)
 {
-	return handle_nl_cmd(section->nl_sock, section->nl80211_id,
-			     0, NL80211_CMD_GET_INTERFACE, NLM_F_DUMP,
-			     iface_handler, section);
+	char buf[MNL_SOCKET_BUFFER_SIZE];
+	struct nlmsghdr *nlh;
+	struct genlmsghdr *genl;
+
+	nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type = section->nl80211_id;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = section->geseq++;
+	genl = mnl_nlmsg_put_extra_header(nlh, sizeof(*genl));
+	genl->cmd = NL80211_CMD_GET_INTERFACE;
+	genl->version = 0;
+	return run_nlmsg(section, section->genl, nlh, buf, sizeof(buf),
+			 nl80211_iface_cb, section);
 }
 
-static int link_bss_handler(struct nl_msg *msg, void *arg)
+static int link_bss_cb(const struct nlmsghdr *nlh, void *data)
 {
-	struct nic *nic = arg;
-	struct nlattr *tb[NL80211_ATTR_MAX + 1];
-	struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
-	struct nlattr *bss[NL80211_BSS_MAX + 1];
-	static struct nla_policy bss_policy[NL80211_BSS_MAX + 1] = {
-		[NL80211_BSS_TSF] = { .type = NLA_U64 },
-		[NL80211_BSS_FREQUENCY] = { .type = NLA_U32 },
-		[NL80211_BSS_BSSID] = { 0 },
-		[NL80211_BSS_BEACON_INTERVAL] = { .type = NLA_U16 },
-		[NL80211_BSS_CAPABILITY] = { .type = NLA_U16 },
-		[NL80211_BSS_INFORMATION_ELEMENTS] = { 0 },
-		[NL80211_BSS_SIGNAL_MBM] = { .type = NLA_U32 },
-		[NL80211_BSS_SIGNAL_UNSPEC] = { .type = NLA_U8 },
-		[NL80211_BSS_STATUS] = { .type = NLA_U32 },
-	};
-	unsigned char *ie;
-	int ielen;
+	struct nic *nic = data;
+	struct genlmsghdr *genl = mnl_nlmsg_get_payload(nlh);
+	struct nlattr *attr, *bss_attr = NULL;
 
-	nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
-		  genlmsg_attrlen(gnlh, 0), NULL);
-
-	if (!tb[NL80211_ATTR_BSS]) {
-		fprintf(stderr, "bss info missing!\n");
-		return NL_SKIP;
-	}
-	if (nla_parse_nested(bss, NL80211_BSS_MAX,
-			     tb[NL80211_ATTR_BSS],
-			     bss_policy)) {
-		fprintf(stderr, "failed to parse nested attributes!\n");
-		return NL_SKIP;
-	}
-
-	if (!bss[NL80211_BSS_BSSID])
-		return NL_SKIP;
-
-	if (!bss[NL80211_BSS_STATUS])
-		return NL_SKIP;
-
-	if (bss[NL80211_BSS_INFORMATION_ELEMENTS]) {
-		ie = nla_data(bss[NL80211_BSS_INFORMATION_ELEMENTS]);
-		ielen = nla_len(bss[NL80211_BSS_INFORMATION_ELEMENTS]);
-
-		while (ielen >= 2 && ielen >= ie[1]) {
-			if (ie[0] == 0) {
-				nic->ssid_len = ie[1];
-				nic->ssid = malloc(nic->ssid_len);
-				if (!nic->ssid)
-					return NL_STOP;
-				memcpy(nic->ssid, ie + 2, nic->ssid_len);
+	mnl_attr_for_each(attr, nlh, sizeof(*genl)) {
+		if (mnl_attr_get_type(attr) == NL80211_ATTR_BSS) {
+			if (mnl_attr_validate(attr, MNL_TYPE_NESTED) == -1) {
+				perror("mnl_attr_validate(NL80211_ATTR_BSS)");
+				return MNL_CB_ERROR;
 			}
-			ielen -= ie[1] + 2;
-			ie += ie[1] + 2;
+			bss_attr = attr;
+			break;
 		}
 	}
+	if (!bss_attr)
+		return MNL_CB_OK;
 
-	return NL_SKIP;
+	mnl_attr_for_each_nested(attr, bss_attr) {
+		if (mnl_attr_get_type(attr) ==
+		    NL80211_BSS_INFORMATION_ELEMENTS) {
+			unsigned char *ie;
+			uint16_t ielen;
+
+			if (mnl_attr_validate(attr, MNL_TYPE_BINARY) == -1) {
+				perror("mnl_attr_validate(NL80211_BSS_INFORMATION_ELEMENTS)");
+				return MNL_CB_ERROR;
+			}
+			ie = mnl_attr_get_payload(attr);
+			ielen = mnl_attr_get_payload_len(attr);
+			while (ielen >= 2 && ielen >= ie[1]) {
+				if (ie[0] == 0) {
+					nic->ssid_len = ie[1];
+					nic->ssid = malloc(nic->ssid_len);
+					if (!nic->ssid) {
+						perror("malloc");
+						return MNL_CB_ERROR;
+					}
+					memcpy(nic->ssid, ie + 2,
+					       nic->ssid_len);
+					break;
+				}
+				ielen -= ie[1] + 2;
+				ie += ie[1] + 2;
+			}
+			break;
+		}
+	}
+	return MNL_CB_OK;
 }
 
-static int link_sta_handler(struct nl_msg *msg, void *arg)
+static int link_station_cb(const struct nlmsghdr *nlh, void *data)
 {
-	struct nic *nic = arg;
-	struct nlattr *tb[NL80211_ATTR_MAX + 1];
-	struct genlmsghdr *gnlh = nlmsg_data(nlmsg_hdr(msg));
-	struct nlattr *sinfo[NL80211_STA_INFO_MAX + 1];
-	static struct nla_policy stats_policy[NL80211_STA_INFO_MAX + 1] = {
-		[NL80211_STA_INFO_INACTIVE_TIME] = { .type = NLA_U32 },
-		[NL80211_STA_INFO_RX_BYTES] = { .type = NLA_U32 },
-		[NL80211_STA_INFO_TX_BYTES] = { .type = NLA_U32 },
-		[NL80211_STA_INFO_RX_PACKETS] = { .type = NLA_U32 },
-		[NL80211_STA_INFO_TX_PACKETS] = { .type = NLA_U32 },
-		[NL80211_STA_INFO_SIGNAL] = { .type = NLA_U8 },
-		[NL80211_STA_INFO_TX_BITRATE] = { .type = NLA_NESTED },
-		[NL80211_STA_INFO_LLID] = { .type = NLA_U16 },
-		[NL80211_STA_INFO_PLID] = { .type = NLA_U16 },
-		[NL80211_STA_INFO_PLINK_STATE] = { .type = NLA_U8 },
-	};
+	struct nic *nic = data;
+	struct genlmsghdr *genl = mnl_nlmsg_get_payload(nlh);
+	struct nlattr *attr, *sta_attr = NULL;
 
-	nla_parse(tb, NL80211_ATTR_MAX, genlmsg_attrdata(gnlh, 0),
-		  genlmsg_attrlen(gnlh, 0), NULL);
-
-	if (!tb[NL80211_ATTR_STA_INFO]) {
-		fprintf(stderr, "sta stats missing!\n");
-		return NL_SKIP;
+	mnl_attr_for_each(attr, nlh, sizeof(*genl)) {
+		if (mnl_attr_get_type(attr) == NL80211_ATTR_STA_INFO) {
+			if (mnl_attr_validate(attr, MNL_TYPE_NESTED) == -1) {
+				perror("mnl_attr_validate(NL80211_ATTR_STA_INFO)");
+				return MNL_CB_ERROR;
+			}
+			sta_attr = attr;
+			break;
+		}
 	}
-	if (nla_parse_nested(sinfo, NL80211_STA_INFO_MAX,
-			     tb[NL80211_ATTR_STA_INFO],
-			     stats_policy)) {
-		fprintf(stderr, "failed to parse nested attributes!\n");
-		return NL_SKIP;
-	}
+	if (!sta_attr)
+		return MNL_CB_OK;
 
-	if (sinfo[NL80211_STA_INFO_SIGNAL]) {
-		nic->signal = (int8_t)nla_get_u8(sinfo[NL80211_STA_INFO_SIGNAL]);
-		nic->have_wifi_signal = true;
+	mnl_attr_for_each_nested(attr, sta_attr) {
+		if (mnl_attr_get_type(attr) == NL80211_STA_INFO_SIGNAL) {
+			if (mnl_attr_validate(attr, MNL_TYPE_U8) == -1) {
+				perror("mnl_attr_validate(NL80211_STA_INFO_SIGNAL)");
+				return MNL_CB_ERROR;
+			}
+			nic->signal = *(int8_t *)mnl_attr_get_payload(attr);
+			nic->have_wifi_signal = true;
+			break;
+		}
 	}
-
-	return NL_SKIP;
+	return MNL_CB_OK;
 }
 
 int get_wifi_info(struct net_section *section, struct nic *nic)
 {
-	int ret;
+	char buf[MNL_SOCKET_BUFFER_SIZE];
+	struct nlmsghdr *nlh;
+	struct genlmsghdr *genl;
 
-	ret = handle_nl_cmd(section->nl_sock, section->nl80211_id, nic->ifindex,
-			    NL80211_CMD_GET_SCAN, NLM_F_DUMP, link_bss_handler,
-			    nic);
-	if (ret)
-		return ret;
+	nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type = section->nl80211_id;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = section->geseq++;
+	genl = mnl_nlmsg_put_extra_header(nlh, sizeof(*genl));
+	genl->cmd = NL80211_CMD_GET_SCAN;
+	genl->version = 0;
+	mnl_attr_put_u32(nlh, NL80211_ATTR_IFINDEX, nic->ifindex);
+	if (run_nlmsg(section, section->genl, nlh, buf, sizeof(buf),
+		      link_bss_cb, nic) == -1)
+		return -1;
 
-	return handle_nl_cmd(section->nl_sock, section->nl80211_id,
-			     nic->ifindex, NL80211_CMD_GET_STATION, NLM_F_DUMP,
-			     link_sta_handler, nic);
+	nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type = section->nl80211_id;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = section->geseq++;
+	genl = mnl_nlmsg_put_extra_header(nlh, sizeof(*genl));
+	genl->cmd = NL80211_CMD_GET_STATION;
+	genl->version = 0;
+	mnl_attr_put_u32(nlh, NL80211_ATTR_IFINDEX, nic->ifindex);
+	return run_nlmsg(section, section->genl, nlh, buf, sizeof(buf),
+			 link_station_cb, nic);
 }

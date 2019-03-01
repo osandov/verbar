@@ -14,7 +14,7 @@ things:
 
 `verbar` has the following dependencies:
 
-- libnl
+- libmnl
 - PulseAudio
 
 The installation path and compilation flags can be tweaked by editing

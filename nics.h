@@ -19,6 +19,7 @@
 #define NICS_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <libmnl/libmnl.h>
 
 struct nic {
@@ -26,12 +27,12 @@ struct nic {
 	bool have_addr;
 	bool is_wifi;
 	bool have_wifi_signal;
+	int8_t signal;
 
 	char *name;
 
 	char *ssid;
 	size_t ssid_len;
-	int signal;
 
 	struct nic *next;
 };
@@ -39,13 +40,12 @@ struct nic {
 struct net_section {
 	struct nic *nics_head, *nics_tail;
 
-	struct mnl_socket *rtnl;
-	unsigned int rtseq;
-
-	struct nl_sock *nl_sock;
-	int nl80211_id;
+	struct mnl_socket *rtnl, *genl;
+	unsigned int rtseq, geseq;
+	uint16_t nl80211_id;
 };
 
+int get_nl80211_id(struct net_section *section);
 int enumerate_nics(struct net_section *section);
 int find_wifi_nics(struct net_section *section);
 int get_wifi_info(struct net_section *section, struct nic *nic);
