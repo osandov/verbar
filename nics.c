@@ -27,9 +27,8 @@
 
 #include "nics.h"
 
-static int run_nlmsg(struct net_section *section, struct mnl_socket *nl,
-		     struct nlmsghdr *nlh, char *buf, size_t buflen,
-		     int (*cb)(const struct nlmsghdr *, void *),
+static int run_nlmsg(struct mnl_socket *nl, struct nlmsghdr *nlh, char *buf,
+		     size_t buflen, int (*cb)(const struct nlmsghdr *, void *),
 		     void *data)
 {
 	unsigned int portid = mnl_socket_get_portid(nl);
@@ -65,6 +64,7 @@ static int run_nlmsg(struct net_section *section, struct mnl_socket *nl,
 
 static int nl80211_id_cb(const struct nlmsghdr *nlh, void *data)
 {
+	struct net_section *section = data;
 	struct genlmsghdr *genl = mnl_nlmsg_get_payload(nlh);
 	struct nlattr *attr;
 
@@ -74,7 +74,7 @@ static int nl80211_id_cb(const struct nlmsghdr *nlh, void *data)
 				perror("mnl_attr_validate(MNL_TYPE_U16)");
 				return MNL_CB_ERROR;
 			}
-			*(unsigned int *)data = mnl_attr_get_u16(attr);
+			section->nl80211_id = mnl_attr_get_u16(attr);
 			break;
 		}
 	}
@@ -97,8 +97,8 @@ int get_nl80211_id(struct net_section *section)
 	mnl_attr_put_u32(nlh, CTRL_ATTR_FAMILY_ID, GENL_ID_CTRL);
 	mnl_attr_put_strz(nlh, CTRL_ATTR_FAMILY_NAME, "nl80211");
 	section->nl80211_id = 0;
-	if (run_nlmsg(section, section->genl, nlh, buf, sizeof(buf),
-		      nl80211_id_cb, &section->nl80211_id) == -1)
+	if (run_nlmsg(section->genl, nlh, buf, sizeof(buf), nl80211_id_cb,
+		      section) == -1)
 		return -1;
 	if (!section->nl80211_id) {
 		fprintf(stderr, "nl80211 not found\n");
@@ -181,8 +181,8 @@ int enumerate_nics(struct net_section *section)
 	nlh->nlmsg_seq = section->rtseq++;
 	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(*rt));
 	rt->rtgen_family = AF_PACKET;
-	if (run_nlmsg(section, section->rtnl, nlh, buf, sizeof(buf),
-		      getlink_cb, section) == -1)
+	if (run_nlmsg(section->rtnl, nlh, buf, sizeof(buf), getlink_cb,
+		      section) == -1)
 		return -1;
 
 	nlh = mnl_nlmsg_put_header(buf);
@@ -191,8 +191,8 @@ int enumerate_nics(struct net_section *section)
 	nlh->nlmsg_seq = section->rtseq++;
 	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(*rt));
 	rt->rtgen_family = AF_INET;
-	return run_nlmsg(section, section->rtnl, nlh, buf, sizeof(buf),
-			 getaddr_cb, section);
+	return run_nlmsg(section->rtnl, nlh, buf, sizeof(buf), getaddr_cb,
+			 section);
 }
 
 static int nl80211_iface_cb(const struct nlmsghdr *nlh, void *data)
@@ -238,8 +238,8 @@ int find_wifi_nics(struct net_section *section)
 	genl = mnl_nlmsg_put_extra_header(nlh, sizeof(*genl));
 	genl->cmd = NL80211_CMD_GET_INTERFACE;
 	genl->version = 0;
-	return run_nlmsg(section, section->genl, nlh, buf, sizeof(buf),
-			 nl80211_iface_cb, section);
+	return run_nlmsg(section->genl, nlh, buf, sizeof(buf), nl80211_iface_cb,
+			 section);
 }
 
 static int link_bss_cb(const struct nlmsghdr *nlh, void *data)
@@ -341,7 +341,7 @@ int get_wifi_info(struct net_section *section, struct nic *nic)
 	genl->cmd = NL80211_CMD_GET_SCAN;
 	genl->version = 0;
 	mnl_attr_put_u32(nlh, NL80211_ATTR_IFINDEX, nic->ifindex);
-	if (run_nlmsg(section, section->genl, nlh, buf, sizeof(buf),
+	if (run_nlmsg(section->genl, nlh, buf, sizeof(buf),
 		      link_bss_cb, nic) == -1)
 		return -1;
 
@@ -353,6 +353,6 @@ int get_wifi_info(struct net_section *section, struct nic *nic)
 	genl->cmd = NL80211_CMD_GET_STATION;
 	genl->version = 0;
 	mnl_attr_put_u32(nlh, NL80211_ATTR_IFINDEX, nic->ifindex);
-	return run_nlmsg(section, section->genl, nlh, buf, sizeof(buf),
-			 link_station_cb, nic);
+	return run_nlmsg(section->genl, nlh, buf, sizeof(buf), link_station_cb,
+			 nic);
 }
