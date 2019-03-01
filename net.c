@@ -15,11 +15,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <libnetlink.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <unistd.h>
-#include <linux/rtnetlink.h>
 #include <netlink/genl/genl.h>
 #include <netlink/genl/ctrl.h>
 #include <netlink/socket.h>
@@ -40,15 +39,22 @@ static void *net_init(int epoll_fd)
 		return NULL;
 	}
 	section->nics_head = section->nics_tail = NULL;
-	section->rth_init = false;
+	section->rtnl = NULL;
 	section->nl_sock = NULL;
 
-	if (rtnl_open(&section->rth, 0) < 0) {
-		fprintf(stderr, "failed to open rtnetlink socket\n");
+	section->rtnl = mnl_socket_open(NETLINK_ROUTE);
+	if (!section->rtnl) {
+		perror("mnl_socket_open(NETLINK_ROUTE)");
 		net_free(section);
 		return NULL;
 	}
-	section->rth_init = true;
+	if (mnl_socket_bind(section->rtnl, 0, MNL_SOCKET_AUTOPID) == -1) {
+		perror("mnl_socket_bind(NETLINK_ROUTE)");
+		net_free(section);
+		return NULL;
+	}
+
+	section->rtseq = time(NULL);
 
 	section->nl_sock = nl_socket_alloc();
 	if (!section->nl_sock) {
@@ -92,11 +98,12 @@ static void free_nics(struct net_section *section)
 static void net_free(void *data)
 {
 	struct net_section *section = data;
+
 	free_nics(section);
 	if (section->nl_sock)
 		nl_socket_free(section->nl_sock);
-	if (section->rth_init)
-		rtnl_close(&section->rth);
+	if (section->rtnl)
+		mnl_socket_close(section->rtnl);
 	free(section);
 }
 

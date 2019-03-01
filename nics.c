@@ -15,11 +15,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <libnetlink.h>
+#include <linux/if.h>
+#include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/nl80211.h>
 #include <linux/rtnetlink.h>
-#include <net/if.h>
 #include <netlink/genl/genl.h>
 #include <netlink/genl/ctrl.h>
 #include <netlink/socket.h>
@@ -27,36 +27,77 @@
 
 #include "nics.h"
 
-static int getlink_filter(const struct sockaddr_nl *who, struct nlmsghdr *n,
-			  void *arg)
+static int run_nlmsg(struct net_section *section, struct nlmsghdr *nlh,
+		     char *buf, size_t buflen,
+		     int (*cb)(const struct nlmsghdr *, void *))
 {
-	struct net_section *section = arg;
+	unsigned int portid = mnl_socket_get_portid(section->rtnl);
+	unsigned int seq = nlh->nlmsg_seq;
+
+	nlh->nlmsg_pid = portid;
+	if (mnl_socket_sendto(section->rtnl, nlh, nlh->nlmsg_len) == -1) {
+		perror("mnl_socket_sendto");
+		return -1;
+	}
+
+	for (;;) {
+		int ret;
+
+		ret = mnl_socket_recvfrom(section->rtnl, buf, buflen);
+		if (ret == -1) {
+			perror("mnl_socket_recvfrom");
+			return -1;
+		} else if (ret == 0) {
+			break;
+		}
+
+		ret = mnl_cb_run(buf, ret, seq, portid, cb, section);
+		if (ret == MNL_CB_ERROR) {
+			perror("mnl_cb_run");
+			return -1;
+		} else if (ret == MNL_CB_STOP) {
+			break;
+		}
+	}
+	return 0;
+}
+
+static int getlink_cb(const struct nlmsghdr *nlh, void *data)
+{
+	struct net_section *section = data;
+	struct ifinfomsg *ifi = mnl_nlmsg_get_payload(nlh);
+	struct nlattr *attr;
+	const char *name = NULL;
 	struct nic *nic;
-	struct ifinfomsg *ifi = NLMSG_DATA(n);
-	struct rtattr *tb[IFLA_MAX + 1];
-	int len = n->nlmsg_len;
 
 	if (ifi->ifi_flags & IFF_LOOPBACK)
-		return 0;
+		return MNL_CB_OK;
 
-	len -= NLMSG_LENGTH(sizeof(*ifi));
-	if (len < 0)
-		return -1;
+	mnl_attr_for_each(attr, nlh, sizeof(*ifi)) {
+		if (mnl_attr_get_type(attr) == IFLA_IFNAME) {
+			if (mnl_attr_validate(attr, MNL_TYPE_STRING) == -1) {
+				perror("mnl_attr_validate(IFLA_IFNAME)");
+				return MNL_CB_ERROR;
+			}
+			name = mnl_attr_get_str(attr);
+		}
+	}
 
-	parse_rtattr(tb, IFLA_MAX, IFLA_RTA(ifi), len);
-
-	if (!tb[IFLA_IFNAME])
-		return 0;
+	if (!name)
+		return MNL_CB_OK;
 
 	nic = calloc(1, sizeof(*nic));
-	if (!nic)
-		return -1;
+	if (!nic) {
+		perror("calloc");
+		return MNL_CB_ERROR;
+	}
 
 	nic->ifindex = ifi->ifi_index;
-	nic->name = strdup(rta_getattr_str(tb[IFLA_IFNAME]));
+	nic->name = strdup(name);
 	if (!nic->name) {
+		perror("strdup");
 		free(nic);
-		return -1;
+		return MNL_CB_ERROR;
 	}
 
 	if (section->nics_tail)
@@ -65,49 +106,46 @@ static int getlink_filter(const struct sockaddr_nl *who, struct nlmsghdr *n,
 		section->nics_head = nic;
 	section->nics_tail = nic;
 
-	return 0;
+	return MNL_CB_OK;
 }
 
-static int getaddr_filter(const struct sockaddr_nl *who, struct nlmsghdr *n,
-			  void *arg)
+static int getaddr_cb(const struct nlmsghdr *nlh, void *data)
 {
-	struct net_section *section = arg;
-	struct ifaddrmsg *ifa = NLMSG_DATA(n);
+	struct net_section *section = data;
+	struct ifaddrmsg *ifa = mnl_nlmsg_get_payload(nlh);
 	struct nic *nic;
 
 	nic = section->nics_head;
 	while (nic) {
 		if (ifa->ifa_index == nic->ifindex)
-			nic->have_addr = 1;
+			nic->have_addr = true;
 		nic = nic->next;
 	}
-
-	return 0;
+	return MNL_CB_OK;
 }
 
 int enumerate_nics(struct net_section *section)
 {
-	if (rtnl_wilddump_request(&section->rth, AF_UNSPEC, RTM_GETLINK) < 0) {
-		fprintf(stderr, "rtnl_wilddump_request() failed");
-		return -1;
-	}
+	char buf[MNL_SOCKET_BUFFER_SIZE];
+	struct nlmsghdr *nlh;
+	struct rtgenmsg *rt;
 
-	if (rtnl_dump_filter(&section->rth, getlink_filter, section) < 0) {
-		fprintf(stderr, "rtnl_dump_filter() failed");
+	nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type	= RTM_GETLINK;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = section->rtseq++;
+	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(*rt));
+	rt->rtgen_family = AF_PACKET;
+	if (run_nlmsg(section, nlh, buf, sizeof(buf), getlink_cb) == -1)
 		return -1;
-	}
 
-	if (rtnl_wilddump_request(&section->rth, AF_INET, RTM_GETADDR) < 0) {
-		fprintf(stderr, "rtnl_wilddump_request() failed");
-		return -1;
-	}
-
-	if (rtnl_dump_filter(&section->rth, getaddr_filter, section) < 0) {
-		fprintf(stderr, "rtnl_dump_filter() failed");
-		return -1;
-	}
-
-	return 0;
+	nlh = mnl_nlmsg_put_header(buf);
+	nlh->nlmsg_type	= RTM_GETADDR;
+	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	nlh->nlmsg_seq = section->rtseq++;
+	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(*rt));
+	rt->rtgen_family = AF_INET;
+	return run_nlmsg(section, nlh, buf, sizeof(buf), getaddr_cb);
 }
 
 static int error_handler(struct sockaddr_nl *nla, struct nlmsgerr *err,
@@ -206,7 +244,7 @@ static int iface_handler(struct nl_msg *msg, void *arg)
 		nic = section->nics_head;
 		while (nic) {
 			if (strcmp(nic->name, name) == 0)
-				nic->is_wifi = 1;
+				nic->is_wifi = true;
 			nic = nic->next;
 		}
 	}
@@ -316,7 +354,7 @@ static int link_sta_handler(struct nl_msg *msg, void *arg)
 
 	if (sinfo[NL80211_STA_INFO_SIGNAL]) {
 		nic->signal = (int8_t)nla_get_u8(sinfo[NL80211_STA_INFO_SIGNAL]);
-		nic->have_wifi_signal = 1;
+		nic->have_wifi_signal = true;
 	}
 
 	return NL_SKIP;
