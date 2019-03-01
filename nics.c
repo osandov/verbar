@@ -246,7 +246,13 @@ static int link_bss_cb(const struct nlmsghdr *nlh, void *data)
 {
 	struct nic *nic = data;
 	struct genlmsghdr *genl = mnl_nlmsg_get_payload(nlh);
-	struct nlattr *attr, *bss_attr = NULL;
+	struct nlattr *attr, *bss_attr = NULL, *bss_info_attr = NULL;
+	bool bss_is_used = false;
+	unsigned char *ie;
+	uint16_t ielen;
+
+	if (nic->ssid)
+		return MNL_CB_OK;
 
 	mnl_attr_for_each(attr, nlh, sizeof(*genl)) {
 		if (mnl_attr_get_type(attr) == NL80211_ATTR_BSS) {
@@ -262,34 +268,37 @@ static int link_bss_cb(const struct nlmsghdr *nlh, void *data)
 		return MNL_CB_OK;
 
 	mnl_attr_for_each_nested(attr, bss_attr) {
-		if (mnl_attr_get_type(attr) ==
-		    NL80211_BSS_INFORMATION_ELEMENTS) {
-			unsigned char *ie;
-			uint16_t ielen;
-
+		switch (mnl_attr_get_type(attr)) {
+		case NL80211_BSS_INFORMATION_ELEMENTS:
 			if (mnl_attr_validate(attr, MNL_TYPE_BINARY) == -1) {
 				perror("mnl_attr_validate(NL80211_BSS_INFORMATION_ELEMENTS)");
 				return MNL_CB_ERROR;
 			}
-			ie = mnl_attr_get_payload(attr);
-			ielen = mnl_attr_get_payload_len(attr);
-			while (ielen >= 2 && ielen >= ie[1]) {
-				if (ie[0] == 0) {
-					nic->ssid_len = ie[1];
-					nic->ssid = malloc(nic->ssid_len);
-					if (!nic->ssid) {
-						perror("malloc");
-						return MNL_CB_ERROR;
-					}
-					memcpy(nic->ssid, ie + 2,
-					       nic->ssid_len);
-					break;
-				}
-				ielen -= ie[1] + 2;
-				ie += ie[1] + 2;
-			}
+			bss_info_attr = attr;
+			break;
+		case NL80211_BSS_STATUS:
+			bss_is_used = true;
 			break;
 		}
+	}
+	if (!bss_info_attr || !bss_is_used)
+		return MNL_CB_OK;
+
+	ie = mnl_attr_get_payload(bss_info_attr);
+	ielen = mnl_attr_get_payload_len(bss_info_attr);
+	while (ielen >= 2 && ielen >= ie[1]) {
+		if (ie[0] == 0) {
+			nic->ssid_len = ie[1];
+			nic->ssid = malloc(nic->ssid_len);
+			if (!nic->ssid) {
+				perror("malloc");
+				return MNL_CB_ERROR;
+			}
+			memcpy(nic->ssid, ie + 2, nic->ssid_len);
+			break;
+		}
+		ielen -= ie[1] + 2;
+		ie += ie[1] + 2;
 	}
 	return MNL_CB_OK;
 }
