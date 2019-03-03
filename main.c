@@ -42,10 +42,10 @@ static Window root;
 static const char *config[] = {
 	"dropbox",
 	"net",
+	"volume",
 	"cpu",
 	"mem",
 	"power",
-	"volume",
 	"clock",
 };
 
