@@ -93,7 +93,6 @@ static FILE *connect_to_dropboxd(void)
 
 	ret = connect(sockfd, &addr, sizeof(addr));
 	if (ret == -1) {
-		perror("connect(\"~/.dropbox/command_socket\")");
 		close(sockfd);
 		return NULL;
 	}
