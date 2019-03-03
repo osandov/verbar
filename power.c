@@ -78,15 +78,15 @@ static int power_update(void *data)
 static int power_append(void *data, struct str *str, bool wordy)
 {
 	struct power_section *section = data;
-	const double high_thresh = 55.0;
-	const double low_thresh = 20.0;
 	int ret;
 
 	if (section->ac_online)
 		ret = str_append_icon(str, "ac");
-	else if (section->battery_capacity >= high_thresh)
+	else if (section->battery_capacity >= 80.0)
 		ret = str_append_icon(str, "bat_full");
-	else if (section->battery_capacity >= low_thresh)
+	else if (section->battery_capacity >= 50.0)
+		ret = str_append_icon(str, "bat_medium");
+	else if (section->battery_capacity >= 20.0)
 		ret = str_append_icon(str, "bat_low");
 	else
 		ret = str_append_icon(str, "bat_empty");
