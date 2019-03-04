@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -105,19 +106,29 @@ static int net_update(void *data)
 	struct net_section *section = data;
 	struct nic *nic;
 
+again:
 	free_nics(section);
 
-	if (enumerate_nics(section))
+	if (enumerate_nics(section)) {
+		if (errno == EINTR)
+			goto again;
 		return -1;
+	}
 
-	if (find_wifi_nics(section))
+	if (find_wifi_nics(section)) {
+		if (errno == EINTR)
+			goto again;
 		return -1;
+	}
 
 	nic = section->nics_head;
 	while (nic) {
 		if (nic->is_wifi) {
-			if (get_wifi_info(section, nic))
+			if (get_wifi_info(section, nic)) {
+				if (errno == EINTR)
+					goto again;
 				return -1;
+			}
 		}
 		nic = nic->next;
 	}
