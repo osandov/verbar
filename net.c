@@ -55,6 +55,40 @@ struct net_section {
 	uint16_t nl80211_id;
 };
 
+static int reopen_rtnl(struct net_section *section)
+{
+	if (section->rtnl)
+		mnl_socket_close(section->rtnl);
+	section->rtnl = mnl_socket_open(NETLINK_ROUTE);
+	if (!section->rtnl) {
+		perror("mnl_socket_open(NETLINK_ROUTE)");
+		return -1;
+	}
+	if (mnl_socket_bind(section->rtnl, 0, MNL_SOCKET_AUTOPID) == -1) {
+		perror("mnl_socket_bind(NETLINK_ROUTE)");
+		return -1;
+	}
+	section->rtseq = time(NULL);
+	return 0;
+}
+
+static int reopen_genl(struct net_section *section)
+{
+	if (section->genl)
+		mnl_socket_close(section->genl);
+	section->genl = mnl_socket_open(NETLINK_GENERIC);
+	if (!section->genl) {
+		perror("mnl_socket_open(NETLINK_GENERIC)");
+		return -1;
+	}
+	if (mnl_socket_bind(section->genl, 0, MNL_SOCKET_AUTOPID) == -1) {
+		perror("mnl_socket_bind(NETLINK_GENERIC)");
+		return -1;
+	}
+	section->geseq = time(NULL);
+	return 0;
+}
+
 static int run_nlmsg(struct mnl_socket *nl, struct nlmsghdr *nlh, char *buf,
 		     size_t buflen, int (*cb)(const struct nlmsghdr *, void *),
 		     void *data)
@@ -115,6 +149,7 @@ static int get_nl80211_id(struct net_section *section)
 	struct nlmsghdr *nlh;
 	struct genlmsghdr *genl;
 
+again:
 	nlh = mnl_nlmsg_put_header(buf);
 	nlh->nlmsg_type = GENL_ID_CTRL;
 	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
@@ -126,8 +161,11 @@ static int get_nl80211_id(struct net_section *section)
 	mnl_attr_put_strz(nlh, CTRL_ATTR_FAMILY_NAME, "nl80211");
 	section->nl80211_id = 0;
 	if (run_nlmsg(section->genl, nlh, buf, sizeof(buf), nl80211_id_cb,
-		      section) == -1)
+		      section) == -1) {
+		if (errno == EINTR && reopen_genl(section) == 0)
+			goto again;
 		return -1;
+	}
 	if (!section->nl80211_id) {
 		fprintf(stderr, "nl80211 not found\n");
 		return -1;
@@ -203,6 +241,7 @@ static int enumerate_nics(struct net_section *section)
 	struct nlmsghdr *nlh;
 	struct rtgenmsg *rt;
 
+again1:
 	nlh = mnl_nlmsg_put_header(buf);
 	nlh->nlmsg_type	= RTM_GETLINK;
 	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
@@ -210,17 +249,26 @@ static int enumerate_nics(struct net_section *section)
 	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(*rt));
 	rt->rtgen_family = AF_PACKET;
 	if (run_nlmsg(section->rtnl, nlh, buf, sizeof(buf), getlink_cb,
-		      section) == -1)
+		      section) == -1) {
+		if (errno == EINTR && reopen_rtnl(section) == 0)
+			goto again1;
 		return -1;
+	}
 
+again2:
 	nlh = mnl_nlmsg_put_header(buf);
 	nlh->nlmsg_type	= RTM_GETADDR;
 	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
 	nlh->nlmsg_seq = section->rtseq++;
 	rt = mnl_nlmsg_put_extra_header(nlh, sizeof(*rt));
 	rt->rtgen_family = AF_INET;
-	return run_nlmsg(section->rtnl, nlh, buf, sizeof(buf), getaddr_cb,
-			 section);
+	if (run_nlmsg(section->rtnl, nlh, buf, sizeof(buf), getaddr_cb,
+		      section) == -1) {
+		if (errno == EINTR && reopen_rtnl(section) == 0)
+			goto again2;
+		return -1;
+	}
+	return 0;
 }
 
 static int nl80211_iface_cb(const struct nlmsghdr *nlh, void *data)
@@ -259,6 +307,7 @@ static int find_wifi_nics(struct net_section *section)
 	struct nlmsghdr *nlh;
 	struct genlmsghdr *genl;
 
+again:
 	nlh = mnl_nlmsg_put_header(buf);
 	nlh->nlmsg_type = section->nl80211_id;
 	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
@@ -266,8 +315,13 @@ static int find_wifi_nics(struct net_section *section)
 	genl = mnl_nlmsg_put_extra_header(nlh, sizeof(*genl));
 	genl->cmd = NL80211_CMD_GET_INTERFACE;
 	genl->version = 0;
-	return run_nlmsg(section->genl, nlh, buf, sizeof(buf), nl80211_iface_cb,
-			 section);
+	if (run_nlmsg(section->genl, nlh, buf, sizeof(buf), nl80211_iface_cb,
+		      section) == -1) {
+		if (errno == EINTR && reopen_genl(section) == 0)
+			goto again;
+		return -1;
+	}
+	return 0;
 }
 
 static int link_bss_cb(const struct nlmsghdr *nlh, void *data)
@@ -370,6 +424,7 @@ static int get_wifi_info(struct net_section *section, struct nic *nic)
 	struct nlmsghdr *nlh;
 	struct genlmsghdr *genl;
 
+again1:
 	nlh = mnl_nlmsg_put_header(buf);
 	nlh->nlmsg_type = section->nl80211_id;
 	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
@@ -378,10 +433,14 @@ static int get_wifi_info(struct net_section *section, struct nic *nic)
 	genl->cmd = NL80211_CMD_GET_SCAN;
 	genl->version = 0;
 	mnl_attr_put_u32(nlh, NL80211_ATTR_IFINDEX, nic->ifindex);
-	if (run_nlmsg(section->genl, nlh, buf, sizeof(buf),
-		      link_bss_cb, nic) == -1)
+	if (run_nlmsg(section->genl, nlh, buf, sizeof(buf), link_bss_cb,
+		      nic) == -1) {
+		if (errno == EINTR && reopen_genl(section) == 0)
+			goto again1;
 		return -1;
+	}
 
+again2:
 	nlh = mnl_nlmsg_put_header(buf);
 	nlh->nlmsg_type = section->nl80211_id;
 	nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
@@ -390,8 +449,13 @@ static int get_wifi_info(struct net_section *section, struct nic *nic)
 	genl->cmd = NL80211_CMD_GET_STATION;
 	genl->version = 0;
 	mnl_attr_put_u32(nlh, NL80211_ATTR_IFINDEX, nic->ifindex);
-	return run_nlmsg(section->genl, nlh, buf, sizeof(buf), link_station_cb,
-			 nic);
+	if (run_nlmsg(section->genl, nlh, buf, sizeof(buf), link_station_cb,
+		      nic) == -1) {
+		if (errno == EINTR && reopen_genl(section) == 0)
+			goto again2;
+		return -1;
+	}
+	return 0;
 }
 
 static void net_free(void *data);
@@ -409,33 +473,8 @@ static void *net_init(int epoll_fd)
 	section->rtnl = NULL;
 	section->genl = NULL;
 
-	section->rtnl = mnl_socket_open(NETLINK_ROUTE);
-	if (!section->rtnl) {
-		perror("mnl_socket_open(NETLINK_ROUTE)");
-		net_free(section);
-		return NULL;
-	}
-	if (mnl_socket_bind(section->rtnl, 0, MNL_SOCKET_AUTOPID) == -1) {
-		perror("mnl_socket_bind(NETLINK_ROUTE)");
-		net_free(section);
-		return NULL;
-	}
-
-	section->genl = mnl_socket_open(NETLINK_GENERIC);
-	if (!section->genl) {
-		perror("mnl_socket_open(NETLINK_GENERIC)");
-		net_free(section);
-		return NULL;
-	}
-	if (mnl_socket_bind(section->genl, 0, MNL_SOCKET_AUTOPID) == -1) {
-		perror("mnl_socket_bind(NETLINK_GENERIC)");
-		net_free(section);
-		return NULL;
-	}
-
-	section->rtseq = section->geseq = time(NULL);
-
-	if (get_nl80211_id(section) == -1) {
+	if (reopen_rtnl(section) == -1 || reopen_genl(section) == -1 ||
+	    get_nl80211_id(section) == -1) {
 		net_free(section);
 		return NULL;
 	}
