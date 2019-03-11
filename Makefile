@@ -8,7 +8,6 @@ OBJS := main.o \
 	dropbox.o \
 	mem.o \
 	net.o \
-	nics.o \
 	power.o \
 	volume.o \
 	pa_watcher.o
